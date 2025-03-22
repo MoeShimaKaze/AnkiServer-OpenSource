@@ -10,7 +10,7 @@
     </parent>
     <groupId>com.server</groupId>
     <artifactId>AnkiServer</artifactId>
-    <version>1.0.3-SNAPSHOT</version>
+    <version>1.0.4-SNAPSHOT</version>
     <name>AnkiServer</name>
     <description>AnkiServer&apos;s project for Spring Boot</description>
     <url/>
