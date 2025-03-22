@@ -614,9 +614,9 @@ public class PurchaseRequestService {
     }
 
     /**
-     * 推荐得分包装类
-     */
-    private record RecommendationScore(PurchaseRequest request, double score, double distance) {
+         * 推荐得分包装类
+         */
+        private record RecommendationScore(PurchaseRequest request, double score, double distance) {
     }
     /**
      * 计算请求的所有费用
@@ -682,6 +682,10 @@ public class PurchaseRequestService {
      * 验证状态变更的合法性
      */
     private void validateStatusTransition(OrderStatus currentStatus, OrderStatus newStatus) {
+        // 添加明确的检查，拒绝MERCHANT_PENDING状态
+        if (newStatus == OrderStatus.MERCHANT_PENDING) {
+            throw new InvalidOperationException("代购订单不支持商家待处理状态");
+        }
         if (currentStatus == OrderStatus.COMPLETED ||
                 currentStatus == OrderStatus.CANCELLED) {
             throw new InvalidOperationException("该需求已结束，无法变更状态");

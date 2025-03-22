@@ -132,18 +132,20 @@ public class TimeoutStatisticsDataGenerator {
 
     /**
      * 生成测试数据的入口方法
+     * @return 生成的总记录数
      */
     @Transactional
-    public void generateTestData() {
+    public int generateTestData() {
         logger.info("开始生成超时统计系统测试数据...");
+        int totalRecords = 0;
 
         try {
             // 首先生成配送区域数据，确保后续订单可以找到对应区域
             generateTestDeliveryRegions();
 
             // 1. 生成用户数据
-            List<User> normalUsers = generateNormalUsers(30);
-            List<User> deliveryUsers = generateDeliveryUsers(20);
+            List<User> normalUsers = generateNormalUsers(1000);
+            List<User> deliveryUsers = generateDeliveryUsers(100);
             List<User> allUsers = new ArrayList<>(normalUsers);
             allUsers.addAll(deliveryUsers);
             logger.info("已生成 {} 个普通用户和 {} 个配送用户", normalUsers.size(), deliveryUsers.size());
@@ -151,34 +153,39 @@ public class TimeoutStatisticsDataGenerator {
             // 1.1 新增：为所有用户创建钱包并添加初始余额
             initializeWalletsForUsers(allUsers);
             logger.info("已为 {} 个用户创建钱包并添加初始余额", allUsers.size());
+
             // 2. 生成商家数据
-            List<MerchantInfo> merchants = generateMerchants(15, normalUsers);
+            List<MerchantInfo> merchants = generateMerchants(200, normalUsers);
             logger.info("已生成 {} 个商家信息", merchants.size());
 
             // 3. 生成店铺数据
-            List<Store> stores = generateStores(20, merchants);
+            List<Store> stores = generateStores(200, merchants);
             logger.info("已生成 {} 个店铺", stores.size());
 
             // 4. 生成商品数据
-            List<Product> products = generateProducts(100, stores);
+            List<Product> products = generateProducts(3000, stores);
             logger.info("已生成 {} 个商品", products.size());
 
             // 5. 生成MailOrder数据（快递代拿订单）
-            List<MailOrder> mailOrders = generateMailOrders(300, normalUsers, deliveryUsers);
+            List<MailOrder> mailOrders = generateMailOrders(3000, normalUsers, deliveryUsers);
+            totalRecords += mailOrders.size();
             logger.info("已生成 {} 个快递代拿订单", mailOrders.size());
 
             // 6. 生成ShoppingOrder数据（商家订单）
-            List<ShoppingOrder> shoppingOrders = generateShoppingOrders(350, normalUsers, deliveryUsers, stores, products);
+            List<ShoppingOrder> shoppingOrders = generateShoppingOrders(3000, normalUsers, deliveryUsers, stores, products);
+            totalRecords += shoppingOrders.size(); // 注意这里原来的代码有错误，使用了mailOrders.size()
             logger.info("已生成 {} 个商家订单", shoppingOrders.size());
 
             // 7. 生成PurchaseRequest数据（代购订单）
-            List<PurchaseRequest> purchaseRequests = generatePurchaseRequests(300, normalUsers, deliveryUsers);
+            List<PurchaseRequest> purchaseRequests = generatePurchaseRequests(3000, normalUsers, deliveryUsers);
+            totalRecords += purchaseRequests.size(); // 注意这里原来的代码有错误，使用了mailOrders.size()
             logger.info("已生成 {} 个代购订单", purchaseRequests.size());
 
             // 8. 最后进行额外验证，确保所有订单地址信息完整
             validateAllOrderAddresses(mailOrders, shoppingOrders, purchaseRequests);
 
-            logger.info("测试数据生成完成，共生成 {} 条订单数据", mailOrders.size() + shoppingOrders.size() + purchaseRequests.size());
+            logger.info("测试数据生成完成，共生成 {} 条订单数据", totalRecords);
+            return totalRecords;
         } catch (Exception e) {
             logger.error("生成测试数据时发生错误", e);
             throw new RuntimeException("生成测试数据失败", e);
@@ -240,6 +247,124 @@ public class TimeoutStatisticsDataGenerator {
         }
 
         logger.info("用户钱包初始化完成，共处理 {} 个用户", createdCount);
+    }
+
+    /**
+     * 根据业务场景确定适合MailOrder的订单状态
+     * 快递代取订单不支持MERCHANT_PENDING状态
+     * @param scenario 业务场景
+     * @return 适合该场景的订单状态
+     */
+    private OrderStatus determineMailOrderStatus(String scenario) {
+        switch(scenario) {
+            case "AWAITING_PAYMENT":
+                return OrderStatus.PAYMENT_PENDING;
+            case "AWAITING_PICKUP":
+                return OrderStatus.PENDING;
+            case "ASSIGNED_TO_DELIVERY":
+                return OrderStatus.ASSIGNED;
+            case "IN_DELIVERY":
+                return OrderStatus.IN_TRANSIT;
+            case "DELIVERED_PENDING_CONFIRM":
+                return OrderStatus.DELIVERED;
+            case "COMPLETED_ORDER":
+                return OrderStatus.COMPLETED;
+            case "CANCELLED_ORDER":
+                return OrderStatus.CANCELLED;
+            case "DISPUTE":
+                return OrderStatus.PLATFORM_INTERVENTION;
+            case "REFUND_PROCESSING":
+                return OrderStatus.REFUNDING;
+            case "REFUND_COMPLETE":
+                return OrderStatus.REFUNDED;
+            case "LOCKED_ORDER":
+                return OrderStatus.LOCKED;
+            case "PAYMENT_EXPIRED":
+                return OrderStatus.PAYMENT_TIMEOUT;
+            default:
+                return OrderStatus.PENDING; // 默认安全状态
+        }
+    }
+
+    /**
+     * 根据业务场景确定适合ShoppingOrder的订单状态
+     * 商品订单支持MERCHANT_PENDING状态
+     * @param scenario 业务场景
+     * @return 适合该场景的订单状态
+     */
+    private OrderStatus determineOrderStatus(String scenario) {
+        switch(scenario) {
+            case "STORE_CONFIRMATION":
+                // 商家订单需要商家确认
+                return OrderStatus.MERCHANT_PENDING;
+            case "PAYMENT_NEEDED":
+                return OrderStatus.PAYMENT_PENDING;
+            case "COMPLETED_ORDER":
+                return OrderStatus.COMPLETED;
+            case "CANCELLED_ORDER":
+                return OrderStatus.CANCELLED;
+            case "IN_DELIVERY":
+                return OrderStatus.IN_TRANSIT;
+            case "DISPUTE":
+                return OrderStatus.PLATFORM_INTERVENTION;
+            case "PENDING_DELIVERY":
+                return OrderStatus.PENDING;
+            case "ASSIGNED_DELIVERY":
+                return OrderStatus.ASSIGNED;
+            case "DELIVERED_ORDER":
+                return OrderStatus.DELIVERED;
+            case "REFUNDING_ORDER":
+                return OrderStatus.REFUNDING;
+            case "REFUNDED_ORDER":
+                return OrderStatus.REFUNDED;
+            case "LOCKED_ORDER":
+                return OrderStatus.LOCKED;
+            case "PAYMENT_TIMEOUT_ORDER":
+                return OrderStatus.PAYMENT_TIMEOUT;
+            default:
+                // 返回默认的安全状态
+                return OrderStatus.PENDING;
+        }
+    }
+
+    /**
+     * 根据代购业务场景确定适合的订单状态
+     * 代购订单不使用MERCHANT_PENDING状态
+     * @param scenario 业务场景
+     * @return 适合该场景的订单状态
+     */
+    private OrderStatus determinePurchaseStatus(String scenario) {
+        switch(scenario) {
+            case "STORE_CONFIRMATION":
+                // 代购订单不需要商家确认，直接为待处理
+                return OrderStatus.PENDING;
+            case "PAYMENT_NEEDED":
+                return OrderStatus.PAYMENT_PENDING;
+            case "COMPLETED_ORDER":
+                return OrderStatus.COMPLETED;
+            case "CANCELLED_ORDER":
+                return OrderStatus.CANCELLED;
+            case "IN_DELIVERY":
+                return OrderStatus.IN_TRANSIT;
+            case "DISPUTE":
+                return OrderStatus.PLATFORM_INTERVENTION;
+            case "PENDING_DELIVERY":
+                return OrderStatus.PENDING;
+            case "ASSIGNED_DELIVERY":
+                return OrderStatus.ASSIGNED;
+            case "DELIVERED_ORDER":
+                return OrderStatus.DELIVERED;
+            case "REFUNDING_ORDER":
+                return OrderStatus.REFUNDING;
+            case "REFUNDED_ORDER":
+                return OrderStatus.REFUNDED;
+            case "LOCKED_ORDER":
+                return OrderStatus.LOCKED;
+            case "PAYMENT_TIMEOUT_ORDER":
+                return OrderStatus.PAYMENT_TIMEOUT;
+            default:
+                return OrderStatus.PENDING;
+        }
     }
 
     /**
@@ -730,7 +855,7 @@ public class TimeoutStatisticsDataGenerator {
 
     /**
      * 生成快递代拿订单(MailOrder)
-     * 增强版：确保地址信息完整
+     * 增强版：确保地址信息完整并添加详细日志记录
      */
     private List<MailOrder> generateMailOrders(int count, List<User> customers, List<User> deliveryUsers) {
         List<MailOrder> mailOrders = new ArrayList<>();
@@ -778,14 +903,14 @@ public class TimeoutStatisticsDataGenerator {
             order.setPickupLatitude(generateRandomCoordinates()[0]);
             order.setPickupLongitude(generateRandomCoordinates()[1]);
 
-            // 设置取件门牌号详情 - 新增
+            // 设置取件门牌号详情
             order.setPickupDetail(generateRandomPickupDetail());
 
             order.setDeliveryAddress(deliveryAddress);
             order.setDeliveryLatitude(generateRandomCoordinates()[0]);
             order.setDeliveryLongitude(generateRandomCoordinates()[1]);
 
-            // 设置配送门牌号详情 - 新增
+            // 设置配送门牌号详情
             order.setDeliveryDetail(generateRandomPickupDetail());
 
             // 设置收件信息
@@ -800,9 +925,44 @@ public class TimeoutStatisticsDataGenerator {
             order.setDeliveryService(random.nextBoolean() ? DeliveryService.STANDARD : DeliveryService.EXPRESS);
             order.setDeliveryDistance(1.0 + random.nextDouble() * 9.0); // 1-10km
 
+            // ===== 添加详细日志 - 设置状态前 =====
+            OrderStatus statusToSet = determineMailOrderStatus("COMPLETED_ORDER");
+            logger.info("==================== 快递订单[{}]状态详细信息 ====================", order.getOrderNumber());
+            logger.info("准备设置订单状态: {}", statusToSet);
+            logger.info("状态对象类型: {}", statusToSet.getClass().getName());
+            logger.info("状态toString(): {}", statusToSet.toString());
+            logger.info("状态name(): {}", statusToSet.name());
+            logger.info("状态ordinal(): {}", statusToSet.ordinal());
+
+            // 检查此状态是否在枚举定义中有效
+            boolean isInEnum = false;
+            for (OrderStatus validStatus : OrderStatus.values()) {
+                if (validStatus == statusToSet) {
+                    isInEnum = true;
+                    break;
+                }
+            }
+            logger.info("状态值在OrderStatus枚举中是否有效: {}", isInEnum);
+
+            // 检查状态名称是否在数据库ENUM定义中
+            String[] validDbValues = {
+                    "PAYMENT_PENDING", "CANCELLED", "PENDING",
+                    "ASSIGNED", "IN_TRANSIT", "DELIVERED", "COMPLETED",
+                    "PLATFORM_INTERVENTION", "REFUNDING", "REFUNDED", "LOCKED",
+                    "PAYMENT_TIMEOUT"
+            };
+            boolean isInDbEnum = Arrays.asList(validDbValues).contains(statusToSet.name());
+            logger.info("状态名称在数据库ENUM定义中是否有效: {}", isInDbEnum);
+            logger.info("===========================================================");
+
             // 设置配送员和状态
-            order.setAssignedUser(deliveryUser);
-            order.setOrderStatus(OrderStatus.COMPLETED);
+            try {
+                order.setAssignedUser(deliveryUser);
+                order.setOrderStatus(statusToSet);
+                logger.info("状态设置成功！");
+            } catch (Exception e) {
+                logger.error("设置状态时发生异常: {}", e.getMessage(), e);
+            }
 
             // 设置各种时间
             LocalDateTime deliveryTime = createdAt.plusMinutes(30 + random.nextInt(90)); // 30-120分钟后送达
@@ -820,7 +980,21 @@ public class TimeoutStatisticsDataGenerator {
             order.setTimeoutWarningSent(false);
             order.setTimeoutCount(0);
 
-            mailOrders.add(mailOrderRepository.save(order));
+            // 记录其他关键字段的值
+            logger.info("快递订单其他关键字段信息:");
+            logger.info("- order_number: {}", order.getOrderNumber());
+            logger.info("- delivery_service: {}", order.getDeliveryService());
+            logger.info("- pickup_code: {}", order.getPickupCode());
+            logger.info("- fee: {}", order.getFee());
+
+            try {
+                MailOrder savedOrder = mailOrderRepository.save(order);
+                logger.info("已完成快递订单保存成功，ID: {}", savedOrder.getId());
+                mailOrders.add(savedOrder);
+            } catch (Exception e) {
+                logger.error("保存已完成快递订单时出错: {}", e.getMessage());
+                logger.error("详细错误信息: ", e);
+            }
         }
 
         // 2. 生成取消的订单
@@ -873,11 +1047,45 @@ public class TimeoutStatisticsDataGenerator {
             order.setDeliveryService(random.nextBoolean() ? DeliveryService.STANDARD : DeliveryService.EXPRESS);
             order.setDeliveryDistance(1.0 + random.nextDouble() * 9.0); // 1-10km
 
-            // 如果随机分配了配送员，则设置
-            order.setAssignedUser(deliveryUser);
+            // ===== 添加详细日志 - 设置状态前 =====
+            OrderStatus statusToSet = determineMailOrderStatus("CANCELLED_ORDER");
+            logger.info("==================== 快递订单[{}]状态详细信息 ====================", order.getOrderNumber());
+            logger.info("准备设置订单状态: {}", statusToSet);
+            logger.info("状态对象类型: {}", statusToSet.getClass().getName());
+            logger.info("状态toString(): {}", statusToSet.toString());
+            logger.info("状态name(): {}", statusToSet.name());
+            logger.info("状态ordinal(): {}", statusToSet.ordinal());
 
-            // 设置状态为已取消
-            order.setOrderStatus(OrderStatus.CANCELLED);
+            // 检查此状态是否在枚举定义中有效
+            boolean isInEnum = false;
+            for (OrderStatus validStatus : OrderStatus.values()) {
+                if (validStatus == statusToSet) {
+                    isInEnum = true;
+                    break;
+                }
+            }
+            logger.info("状态值在OrderStatus枚举中是否有效: {}", isInEnum);
+
+            // 检查状态名称是否在数据库ENUM定义中
+            String[] validDbValues = {
+                    "PAYMENT_PENDING", "CANCELLED", "PENDING",
+                    "ASSIGNED", "IN_TRANSIT", "DELIVERED", "COMPLETED",
+                    "PLATFORM_INTERVENTION", "REFUNDING", "REFUNDED", "LOCKED",
+                    "PAYMENT_TIMEOUT"
+            };
+            boolean isInDbEnum = Arrays.asList(validDbValues).contains(statusToSet.name());
+            logger.info("状态名称在数据库ENUM定义中是否有效: {}", isInDbEnum);
+            logger.info("===========================================================");
+
+            // 如果随机分配了配送员，则设置
+            try {
+                order.setAssignedUser(deliveryUser);
+                // 设置状态为已取消
+                order.setOrderStatus(statusToSet);
+                logger.info("状态设置成功！");
+            } catch (Exception e) {
+                logger.error("设置状态时发生异常: {}", e.getMessage(), e);
+            }
 
             // 设置取消时间（创建后的0-24小时内）
             LocalDateTime cancelTime = createdAt.plusHours(random.nextInt(24));
@@ -895,7 +1103,20 @@ public class TimeoutStatisticsDataGenerator {
             order.setTimeoutWarningSent(false);
             order.setTimeoutCount(0);
 
-            mailOrders.add(mailOrderRepository.save(order));
+            // 记录其他关键字段的值
+            logger.info("已取消快递订单其他关键字段信息:");
+            logger.info("- order_number: {}", order.getOrderNumber());
+            logger.info("- lock_reason: {}", order.getLockReason());
+            logger.info("- user_income: {}", order.getUserIncome());
+
+            try {
+                MailOrder savedOrder = mailOrderRepository.save(order);
+                logger.info("已取消快递订单保存成功，ID: {}", savedOrder.getId());
+                mailOrders.add(savedOrder);
+            } catch (Exception e) {
+                logger.error("保存已取消快递订单时出错: {}", e.getMessage());
+                logger.error("详细错误信息: ", e);
+            }
         }
 
         // 3. 生成正常活跃订单（非超时）
@@ -947,30 +1168,68 @@ public class TimeoutStatisticsDataGenerator {
             order.setDeliveryService(random.nextBoolean() ? DeliveryService.STANDARD : DeliveryService.EXPRESS);
             order.setDeliveryDistance(1.0 + random.nextDouble() * 9.0); // 1-10km
 
-            // 设置配送员
-            order.setAssignedUser(deliveryUser);
-
             // 随机设置不同的活跃状态
-            OrderStatus status;
+            String scenario;
             if (deliveryUser == null) {
                 // 未分配配送员时，状态只能是PENDING
-                status = OrderStatus.PENDING;
+                scenario = "AWAITING_PICKUP";
             } else {
                 // 已分配配送员，随机设置状态
-                OrderStatus[] activeStatuses = {OrderStatus.ASSIGNED, OrderStatus.IN_TRANSIT, OrderStatus.DELIVERED};
-                status = activeStatuses[random.nextInt(activeStatuses.length)];
+                String[] activeScenarios = {
+                        "ASSIGNED_TO_DELIVERY", "IN_DELIVERY", "DELIVERED_PENDING_CONFIRM"
+                };
+                scenario = activeScenarios[random.nextInt(activeScenarios.length)];
             }
-            order.setOrderStatus(status);
+
+            // ===== 添加详细日志 - 设置状态前 =====
+            OrderStatus statusToSet = determineMailOrderStatus(scenario);
+            logger.info("==================== 快递订单[{}]状态详细信息 ====================", order.getOrderNumber());
+            logger.info("准备设置订单状态: {}", statusToSet);
+            logger.info("状态对象类型: {}", statusToSet.getClass().getName());
+            logger.info("状态toString(): {}", statusToSet.toString());
+            logger.info("状态name(): {}", statusToSet.name());
+            logger.info("状态ordinal(): {}", statusToSet.ordinal());
+            logger.info("活跃订单场景: {}", scenario);
+
+            // 检查此状态是否在枚举定义中有效
+            boolean isInEnum = false;
+            for (OrderStatus validStatus : OrderStatus.values()) {
+                if (validStatus == statusToSet) {
+                    isInEnum = true;
+                    break;
+                }
+            }
+            logger.info("状态值在OrderStatus枚举中是否有效: {}", isInEnum);
+
+            // 检查状态名称是否在数据库ENUM定义中
+            String[] validDbValues = {
+                    "PAYMENT_PENDING", "CANCELLED", "PENDING",
+                    "ASSIGNED", "IN_TRANSIT", "DELIVERED", "COMPLETED",
+                    "PLATFORM_INTERVENTION", "REFUNDING", "REFUNDED", "LOCKED",
+                    "PAYMENT_TIMEOUT"
+            };
+            boolean isInDbEnum = Arrays.asList(validDbValues).contains(statusToSet.name());
+            logger.info("状态名称在数据库ENUM定义中是否有效: {}", isInDbEnum);
+            logger.info("===========================================================");
+
+            // 设置配送员
+            try {
+                order.setAssignedUser(deliveryUser);
+                order.setOrderStatus(statusToSet);
+                logger.info("状态设置成功！");
+            } catch (Exception e) {
+                logger.error("设置状态时发生异常: {}", e.getMessage(), e);
+            }
 
             // 根据状态设置相应的时间
             LocalDateTime deliveryTime = createdAt.plusMinutes(30 + random.nextInt(90)); // 30-120分钟后送达
             order.setDeliveryTime(deliveryTime);
 
-            if (status == OrderStatus.IN_TRANSIT || status == OrderStatus.DELIVERED) {
+            if (statusToSet == OrderStatus.IN_TRANSIT || statusToSet == OrderStatus.DELIVERED) {
                 // 设置取件时间但不设置送达时间（IN_TRANSIT）
             }
 
-            if (status == OrderStatus.DELIVERED) {
+            if (statusToSet == OrderStatus.DELIVERED) {
                 // 设置送达时间
                 order.setDeliveredDate(deliveryTime.minusMinutes(random.nextInt(30))); // 预计时间前0-30分钟送达
             }
@@ -990,7 +1249,22 @@ public class TimeoutStatisticsDataGenerator {
             order.setTimeoutWarningSent(false);
             order.setTimeoutCount(0);
 
-            mailOrders.add(mailOrderRepository.save(order));
+            // 记录其他关键字段的值
+            logger.info("活跃快递订单其他关键字段信息:");
+            logger.info("- order_number: {}", order.getOrderNumber());
+            logger.info("- delivery_time: {}", order.getDeliveryTime());
+            if (order.getDeliveredDate() != null) {
+                logger.info("- delivered_date: {}", order.getDeliveredDate());
+            }
+
+            try {
+                MailOrder savedOrder = mailOrderRepository.save(order);
+                logger.info("活跃快递订单保存成功，ID: {}", savedOrder.getId());
+                mailOrders.add(savedOrder);
+            } catch (Exception e) {
+                logger.error("保存活跃快递订单时出错: {}", e.getMessage());
+                logger.error("详细错误信息: ", e);
+            }
         }
 
         // 4. 生成超时订单
@@ -1042,27 +1316,65 @@ public class TimeoutStatisticsDataGenerator {
             order.setDeliveryService(random.nextBoolean() ? DeliveryService.STANDARD : DeliveryService.EXPRESS);
             order.setDeliveryDistance(1.0 + random.nextDouble() * 9.0); // 1-10km
 
-            // 设置配送员
-            order.setAssignedUser(deliveryUser);
-
             // 设置状态和时间
+            String scenario;
             if (i % 2 == 0) {
                 // 设置为平台介入状态
-                order.setOrderStatus(OrderStatus.PLATFORM_INTERVENTION);
-                order.setInterventionTime(LocalDateTime.now().minusHours(random.nextInt(24)));
-
-                // 设置较早的送达时间，确保超时
-                LocalDateTime deliveryTime = createdAt.plusMinutes(30);
-                order.setDeliveryTime(deliveryTime);
+                scenario = "DISPUTE";
             } else {
                 // 设置为其他活跃状态但已超时
-                OrderStatus[] activeStatuses = {OrderStatus.PENDING, OrderStatus.ASSIGNED, OrderStatus.IN_TRANSIT};
-                order.setOrderStatus(activeStatuses[random.nextInt(activeStatuses.length)]);
-
-                // 设置很早的送达时间，确保超时
-                LocalDateTime deliveryTime = createdAt.plusMinutes(30);
-                order.setDeliveryTime(deliveryTime);
+                String[] timeoutScenarios = {"ASSIGNED_TO_DELIVERY", "IN_DELIVERY"};
+                scenario = timeoutScenarios[random.nextInt(timeoutScenarios.length)];
             }
+
+            // ===== 添加详细日志 - 设置状态前 =====
+            OrderStatus statusToSet = determineMailOrderStatus(scenario);
+            logger.info("==================== 快递订单[{}]状态详细信息 ====================", order.getOrderNumber());
+            logger.info("准备设置订单状态: {}", statusToSet);
+            logger.info("状态对象类型: {}", statusToSet.getClass().getName());
+            logger.info("状态toString(): {}", statusToSet.toString());
+            logger.info("状态name(): {}", statusToSet.name());
+            logger.info("状态ordinal(): {}", statusToSet.ordinal());
+            logger.info("超时订单场景: {}", scenario);
+
+            // 检查此状态是否在枚举定义中有效
+            boolean isInEnum = false;
+            for (OrderStatus validStatus : OrderStatus.values()) {
+                if (validStatus == statusToSet) {
+                    isInEnum = true;
+                    break;
+                }
+            }
+            logger.info("状态值在OrderStatus枚举中是否有效: {}", isInEnum);
+
+            // 检查状态名称是否在数据库ENUM定义中
+            String[] validDbValues = {
+                    "PAYMENT_PENDING", "CANCELLED", "PENDING",
+                    "ASSIGNED", "IN_TRANSIT", "DELIVERED", "COMPLETED",
+                    "PLATFORM_INTERVENTION", "REFUNDING", "REFUNDED", "LOCKED",
+                    "PAYMENT_TIMEOUT"
+            };
+            boolean isInDbEnum = Arrays.asList(validDbValues).contains(statusToSet.name());
+            logger.info("状态名称在数据库ENUM定义中是否有效: {}", isInDbEnum);
+            logger.info("===========================================================");
+
+            // 设置配送员
+            try {
+                order.setAssignedUser(deliveryUser);
+                order.setOrderStatus(statusToSet);
+                logger.info("状态设置成功！");
+            } catch (Exception e) {
+                logger.error("设置状态时发生异常: {}", e.getMessage(), e);
+            }
+
+            // 设置状态相关字段
+            if (statusToSet == OrderStatus.PLATFORM_INTERVENTION) {
+                order.setInterventionTime(LocalDateTime.now().minusHours(random.nextInt(24)));
+            }
+
+            // 设置很早的送达时间，确保超时
+            LocalDateTime deliveryTime = createdAt.plusMinutes(30);
+            order.setDeliveryTime(deliveryTime);
 
             // 设置费用信息
             order.setFee(10.0 + random.nextDouble() * 20.0); // 10-30元
@@ -1078,7 +1390,23 @@ public class TimeoutStatisticsDataGenerator {
             order.setTimeoutWarningSent(true);
             order.setTimeoutCount(1 + random.nextInt(3)); // 1-3次超时
 
-            mailOrders.add(mailOrderRepository.save(order));
+            // 记录其他关键字段的值
+            logger.info("超时快递订单其他关键字段信息:");
+            logger.info("- order_number: {}", order.getOrderNumber());
+            logger.info("- timeout_status: {}", order.getTimeoutStatus());
+            logger.info("- timeout_count: {}", order.getTimeoutCount());
+            if (order.getInterventionTime() != null) {
+                logger.info("- intervention_time: {}", order.getInterventionTime());
+            }
+
+            try {
+                MailOrder savedOrder = mailOrderRepository.save(order);
+                logger.info("超时快递订单保存成功，ID: {}", savedOrder.getId());
+                mailOrders.add(savedOrder);
+            } catch (Exception e) {
+                logger.error("保存超时快递订单时出错: {}", e.getMessage());
+                logger.error("详细错误信息: ", e);
+            }
         }
 
         return mailOrders;
@@ -1086,7 +1414,7 @@ public class TimeoutStatisticsDataGenerator {
 
     /**
      * 生成商家订单(ShoppingOrder)
-     * 增强版：确保地址信息完整
+     * 增强版：确保地址信息完整，使用正确的状态决定方法
      */
     private List<ShoppingOrder> generateShoppingOrders(int count, List<User> customers, List<User> deliveryUsers, List<Store> stores, List<Product> products) {
         List<ShoppingOrder> shoppingOrders = new ArrayList<>();
@@ -1156,9 +1484,45 @@ public class TimeoutStatisticsDataGenerator {
             order.setDeliveryType(random.nextBoolean() ? DeliveryType.MUTUAL : DeliveryType.PLATFORM);
             order.setDeliveryDistance(0.5 + random.nextDouble() * 5.5); // 0.5-6km
 
+            // 使用状态决定方法
+            OrderStatus statusToSet = determineOrderStatus("COMPLETED_ORDER");
+
+            logger.info("==================== 订单[{}]状态详细信息 ====================", order.getOrderNumber());
+            logger.info("准备设置订单状态: {}", statusToSet);
+            logger.info("状态对象类型: {}", statusToSet.getClass().getName());
+            logger.info("状态toString(): {}", statusToSet.toString());
+            logger.info("状态name(): {}", statusToSet.name());
+            logger.info("状态ordinal(): {}", statusToSet.ordinal());
+
+            // 检查此状态是否在枚举定义中有效
+            boolean isInEnum = false;
+            for (OrderStatus validStatus : OrderStatus.values()) {
+                if (validStatus == statusToSet) {
+                    isInEnum = true;
+                    break;
+                }
+            }
+            logger.info("状态值在OrderStatus枚举中是否有效: {}", isInEnum);
+
+            // 检查状态名称是否在数据库ENUM定义中
+            String[] validDbValues = {
+                    "MERCHANT_PENDING", "PAYMENT_PENDING", "CANCELLED", "PENDING",
+                    "ASSIGNED", "IN_TRANSIT", "DELIVERED", "COMPLETED",
+                    "PLATFORM_INTERVENTION", "REFUNDING", "REFUNDED", "LOCKED",
+                    "PAYMENT_TIMEOUT"
+            };
+            boolean isInDbEnum = Arrays.asList(validDbValues).contains(statusToSet.name());
+            logger.info("状态名称在数据库ENUM定义中是否有效: {}", isInDbEnum);
+            logger.info("===========================================================");
+
             // 设置配送员和状态
-            order.setAssignedUser(deliveryUser);
-            order.setOrderStatus(OrderStatus.COMPLETED);
+            try {
+                order.setAssignedUser(deliveryUser);
+                order.setOrderStatus(statusToSet);
+                logger.info("状态设置成功!");
+            } catch (Exception e) {
+                logger.error("设置状态时发生异常: {}", e.getMessage(), e);
+            }
 
             // 设置各种时间
             LocalDateTime paymentTime = createdAt.plusMinutes(random.nextInt(30)); // 0-30分钟后支付
@@ -1194,7 +1558,20 @@ public class TimeoutStatisticsDataGenerator {
                 order.setRemark(TEST_ORDER_PREFIX + "请尽快配送，谢谢！");
             }
 
-            shoppingOrders.add(shoppingOrderRepository.save(order));
+            // 记录其他关键字段的值
+            logger.info("订单其他关键字段信息:");
+            logger.info("- order_number: {}", order.getOrderNumber());
+            logger.info("- delivery_type: {}", order.getDeliveryType());
+            logger.info("- quantity: {}", order.getQuantity());
+
+            try {
+                ShoppingOrder savedOrder = shoppingOrderRepository.save(order);
+                logger.info("订单保存成功，ID: {}", savedOrder.getId());
+                shoppingOrders.add(savedOrder);
+            } catch (Exception e) {
+                logger.error("保存订单时出错: {}", e.getMessage());
+                logger.error("详细错误信息: ", e);
+            }
         }
 
         // 2. 生成已取消订单
@@ -1250,8 +1627,30 @@ public class TimeoutStatisticsDataGenerator {
             order.setDeliveryType(random.nextBoolean() ? DeliveryType.MUTUAL : DeliveryType.PLATFORM);
             order.setDeliveryDistance(0.5 + random.nextDouble() * 5.5); // 0.5-6km
 
-            // 设置状态为已取消
-            order.setOrderStatus(OrderStatus.CANCELLED);
+            // 使用状态决定方法
+            OrderStatus statusToSet = determineOrderStatus("CANCELLED_ORDER");
+
+            logger.info("==================== 订单[{}]状态详细信息 ====================", order.getOrderNumber());
+            logger.info("准备设置订单状态: {}", statusToSet);
+            logger.info("状态对象类型: {}", statusToSet.getClass().getName());
+            logger.info("状态toString(): {}", statusToSet.toString());
+            logger.info("状态name(): {}", statusToSet.name());
+            logger.info("状态ordinal(): {}", statusToSet.ordinal());
+            logger.info("状态值在OrderStatus枚举中是否有效: {}", Arrays.asList(OrderStatus.values()).contains(statusToSet));
+            logger.info("状态名称在数据库ENUM定义中是否有效: {}",
+                    Arrays.asList("MERCHANT_PENDING","PAYMENT_PENDING","CANCELLED","PENDING",
+                            "ASSIGNED","IN_TRANSIT","DELIVERED","COMPLETED",
+                            "PLATFORM_INTERVENTION","REFUNDING","REFUNDED","LOCKED",
+                            "PAYMENT_TIMEOUT").contains(statusToSet.name()));
+            logger.info("===========================================================");
+
+            // 设置为已取消状态
+            try {
+                order.setOrderStatus(statusToSet);
+                logger.info("状态设置成功!");
+            } catch (Exception e) {
+                logger.error("设置状态时发生异常: {}", e.getMessage(), e);
+            }
 
             // 随机设置支付时间（50%概率未支付取消，50%概率已支付取消）
             if (random.nextBoolean()) {
@@ -1290,7 +1689,14 @@ public class TimeoutStatisticsDataGenerator {
             order.setTimeoutWarningSent(false);
             order.setTimeoutCount(0);
 
-            shoppingOrders.add(shoppingOrderRepository.save(order));
+            try {
+                ShoppingOrder savedOrder = shoppingOrderRepository.save(order);
+                logger.info("已取消订单保存成功，ID: {}", savedOrder.getId());
+                shoppingOrders.add(savedOrder);
+            } catch (Exception e) {
+                logger.error("保存已取消订单时出错: {}", e.getMessage());
+                logger.error("详细错误信息: ", e);
+            }
         }
 
         // 3. 生成支付待处理订单
@@ -1345,8 +1751,23 @@ public class TimeoutStatisticsDataGenerator {
             order.setDeliveryType(random.nextBoolean() ? DeliveryType.MUTUAL : DeliveryType.PLATFORM);
             order.setDeliveryDistance(0.5 + random.nextDouble() * 5.5); // 0.5-6km
 
+            // 使用状态决定方法
+            OrderStatus statusToSet = determineOrderStatus("PAYMENT_NEEDED");
+
+            logger.info("==================== 订单[{}]状态详细信息 ====================", order.getOrderNumber());
+            logger.info("准备设置订单状态: {}", statusToSet);
+            logger.info("状态toString(): {}", statusToSet.toString());
+            logger.info("状态name(): {}", statusToSet.name());
+            logger.info("状态值在OrderStatus枚举中是否有效: {}", Arrays.asList(OrderStatus.values()).contains(statusToSet));
+            logger.info("===========================================================");
+
             // 设置状态为支付待处理
-            order.setOrderStatus(OrderStatus.PAYMENT_PENDING);
+            try {
+                order.setOrderStatus(statusToSet);
+                logger.info("状态设置成功!");
+            } catch (Exception e) {
+                logger.error("设置状态时发生异常: {}", e.getMessage(), e);
+            }
 
             // 费用信息
             BigDecimal productTotal = product.getPrice().multiply(BigDecimal.valueOf(quantity));
@@ -1372,7 +1793,14 @@ public class TimeoutStatisticsDataGenerator {
                 order.setRemark("等待支付中，请尽快支付");
             }
 
-            shoppingOrders.add(shoppingOrderRepository.save(order));
+            try {
+                ShoppingOrder savedOrder = shoppingOrderRepository.save(order);
+                logger.info("支付待处理订单保存成功，ID: {}", savedOrder.getId());
+                shoppingOrders.add(savedOrder);
+            } catch (Exception e) {
+                logger.error("保存支付待处理订单时出错: {}", e.getMessage());
+                logger.error("详细错误信息: ", e);
+            }
         }
 
         // 4. 生成活跃订单（非超时）
@@ -1428,33 +1856,50 @@ public class TimeoutStatisticsDataGenerator {
             order.setDeliveryType(random.nextBoolean() ? DeliveryType.MUTUAL : DeliveryType.PLATFORM);
             order.setDeliveryDistance(0.5 + random.nextDouble() * 5.5); // 0.5-6km
 
-            // 随机设置不同的活跃状态
-            OrderStatus status;
+            // 根据情况决定状态场景
+            String scenario;
             if (deliveryUser == null) {
-                // 未分配配送员时，状态有限
-                OrderStatus[] possibleStatuses = {OrderStatus.PENDING, OrderStatus.MERCHANT_PENDING};
-                status = possibleStatuses[random.nextInt(possibleStatuses.length)];
+                // 未分配配送员时，随机选择合适的状态
+                String[] possibleScenarios = {"PENDING_DELIVERY", "STORE_CONFIRMATION", "PAYMENT_NEEDED"};
+                scenario = possibleScenarios[random.nextInt(possibleScenarios.length)];
             } else {
                 // 已分配配送员，随机设置状态
-                OrderStatus[] possibleStatuses = {
-                        OrderStatus.MERCHANT_PENDING, OrderStatus.PENDING,
-                        OrderStatus.ASSIGNED, OrderStatus.IN_TRANSIT, OrderStatus.DELIVERED
+                String[] possibleScenarios = {
+                        "STORE_CONFIRMATION", "PENDING_DELIVERY",
+                        "ASSIGNED_DELIVERY", "IN_DELIVERY", "DELIVERED_ORDER"
                 };
-                status = possibleStatuses[random.nextInt(possibleStatuses.length)];
+                scenario = possibleScenarios[random.nextInt(possibleScenarios.length)];
             }
-            order.setOrderStatus(status);
-            order.setAssignedUser(deliveryUser);
+
+            // 使用状态决定方法
+            OrderStatus statusToSet = determineOrderStatus(scenario);
+
+            logger.info("==================== 订单[{}]状态详细信息 ====================", order.getOrderNumber());
+            logger.info("场景: {}, 准备设置订单状态: {}", scenario, statusToSet);
+            logger.info("状态toString(): {}", statusToSet.toString());
+            logger.info("状态name(): {}", statusToSet.name());
+            logger.info("状态值在OrderStatus枚举中是否有效: {}", Arrays.asList(OrderStatus.values()).contains(statusToSet));
+            logger.info("===========================================================");
+
+            try {
+                order.setOrderStatus(statusToSet);
+                order.setAssignedUser(deliveryUser);
+                logger.info("状态设置成功!");
+            } catch (Exception e) {
+                logger.error("设置状态时发生异常: {}", e.getMessage(), e);
+            }
 
             // 根据状态设置相应的时间
             LocalDateTime paymentTime = createdAt.plusMinutes(random.nextInt(30)); // 0-30分钟后支付
             order.setPaymentTime(paymentTime);
 
-            if (status == OrderStatus.ASSIGNED || status == OrderStatus.IN_TRANSIT || status == OrderStatus.DELIVERED) {
+            if (statusToSet == OrderStatus.ASSIGNED || statusToSet == OrderStatus.IN_TRANSIT ||
+                    statusToSet == OrderStatus.DELIVERED) {
                 LocalDateTime expectedDeliveryTime = paymentTime.plusMinutes(30 + random.nextInt(90)); // 30-120分钟后送达
                 order.setExpectedDeliveryTime(expectedDeliveryTime);
             }
 
-            if (status == OrderStatus.DELIVERED) {
+            if (statusToSet == OrderStatus.DELIVERED) {
                 LocalDateTime deliveredTime = order.getExpectedDeliveryTime().plusMinutes(random.nextInt(30)); // 0-30分钟后送达
                 order.setDeliveredTime(deliveredTime);
             }
@@ -1483,7 +1928,14 @@ public class TimeoutStatisticsDataGenerator {
                 order.setRemark("请在门口放置，谢谢！");
             }
 
-            shoppingOrders.add(shoppingOrderRepository.save(order));
+            try {
+                ShoppingOrder savedOrder = shoppingOrderRepository.save(order);
+                logger.info("活跃订单保存成功，ID: {}", savedOrder.getId());
+                shoppingOrders.add(savedOrder);
+            } catch (Exception e) {
+                logger.error("保存活跃订单时出错: {}", e.getMessage());
+                logger.error("详细错误信息: ", e);
+            }
         }
 
         // 5. 生成超时订单
@@ -1539,20 +1991,40 @@ public class TimeoutStatisticsDataGenerator {
             order.setDeliveryType(random.nextBoolean() ? DeliveryType.MUTUAL : DeliveryType.PLATFORM);
             order.setDeliveryDistance(0.5 + random.nextDouble() * 5.5); // 0.5-6km
 
-            // 设置配送员
-            order.setAssignedUser(deliveryUser);
-
-            // 设置状态和时间
+            // 根据循环索引选择不同的超时状态场景
+            String scenario;
             if (i % 3 == 0) {
                 // 设置为平台介入状态
-                order.setOrderStatus(OrderStatus.PLATFORM_INTERVENTION);
-                order.setInterventionTime(LocalDateTime.now().minusHours(random.nextInt(48)));
+                scenario = "DISPUTE";
             } else if (i % 3 == 1) {
                 // 设置为IN_TRANSIT但已超时
-                order.setOrderStatus(OrderStatus.IN_TRANSIT);
+                scenario = "IN_DELIVERY";
             } else {
                 // 设置为ASSIGNED但已超时
-                order.setOrderStatus(OrderStatus.ASSIGNED);
+                scenario = "ASSIGNED_DELIVERY";
+            }
+
+            // 使用状态决定方法
+            OrderStatus statusToSet = determineOrderStatus(scenario);
+
+            logger.info("==================== 超时订单[{}]状态详细信息 ====================", order.getOrderNumber());
+            logger.info("场景: {}, 准备设置订单状态: {}", scenario, statusToSet);
+            logger.info("状态toString(): {}", statusToSet.toString());
+            logger.info("状态name(): {}", statusToSet.name());
+            logger.info("状态值在OrderStatus枚举中是否有效: {}", Arrays.asList(OrderStatus.values()).contains(statusToSet));
+            logger.info("===========================================================");
+
+            // 设置配送员
+            try {
+                order.setAssignedUser(deliveryUser);
+                order.setOrderStatus(statusToSet);
+                logger.info("状态设置成功!");
+            } catch (Exception e) {
+                logger.error("设置状态时发生异常: {}", e.getMessage(), e);
+            }
+
+            if (statusToSet == OrderStatus.PLATFORM_INTERVENTION) {
+                order.setInterventionTime(LocalDateTime.now().minusHours(random.nextInt(48)));
             }
 
             // 设置支付时间
@@ -1586,7 +2058,14 @@ public class TimeoutStatisticsDataGenerator {
             order.setTimeoutWarningSent(true);
             order.setTimeoutCount(1 + random.nextInt(3)); // 1-3次超时
 
-            shoppingOrders.add(shoppingOrderRepository.save(order));
+            try {
+                ShoppingOrder savedOrder = shoppingOrderRepository.save(order);
+                logger.info("超时订单保存成功，ID: {}", savedOrder.getId());
+                shoppingOrders.add(savedOrder);
+            } catch (Exception e) {
+                logger.error("保存超时订单时出错: {}", e.getMessage());
+                logger.error("详细错误信息: ", e);
+            }
         }
 
         return shoppingOrders;
@@ -1594,7 +2073,7 @@ public class TimeoutStatisticsDataGenerator {
 
     /**
      * 生成代购订单(PurchaseRequest)
-     * 增强版：确保地址信息完整
+     * 增强版：确保地址信息完整，避免使用MERCHANT_PENDING状态
      */
     private List<PurchaseRequest> generatePurchaseRequests(int count, List<User> customers, List<User> deliveryUsers) {
         List<PurchaseRequest> purchaseRequests = new ArrayList<>();
@@ -1684,9 +2163,24 @@ public class TimeoutStatisticsDataGenerator {
             request.setRecipientName(recipientName);
             request.setRecipientPhone(recipientPhone);
 
+            // 使用状态决定方法 - 代购订单不使用MERCHANT_PENDING
+            OrderStatus statusToSet = determinePurchaseStatus("COMPLETED_ORDER");
+
+            logger.info("==================== 代购订单[{}]状态详细信息 ====================", request.getRequestNumber());
+            logger.info("准备设置订单状态: {}", statusToSet);
+            logger.info("状态toString(): {}", statusToSet.toString());
+            logger.info("状态name(): {}", statusToSet.name());
+            logger.info("状态值在OrderStatus枚举中是否有效: {}", Arrays.asList(OrderStatus.values()).contains(statusToSet));
+            logger.info("===========================================================");
+
             // 设置状态和配送员
-            request.setStatus(OrderStatus.COMPLETED);
-            request.setAssignedUser(deliveryUser);
+            try {
+                request.setStatus(statusToSet);
+                request.setAssignedUser(deliveryUser);
+                logger.info("状态设置成功!");
+            } catch (Exception e) {
+                logger.error("设置状态时发生异常: {}", e.getMessage(), e);
+            }
 
             // 设置时间信息
             LocalDateTime paymentTime = createdAt.plusMinutes(random.nextInt(60)); // 0-60分钟后支付
@@ -1721,7 +2215,14 @@ public class TimeoutStatisticsDataGenerator {
             request.setTimeoutWarningSent(false);
             request.setTimeoutCount(0);
 
-            purchaseRequests.add(purchaseRequestRepository.save(request));
+            try {
+                PurchaseRequest savedRequest = purchaseRequestRepository.save(request);
+                logger.info("已完成代购订单保存成功，ID: {}", savedRequest.getId());
+                purchaseRequests.add(savedRequest);
+            } catch (Exception e) {
+                logger.error("保存已完成代购订单时出错: {}", e.getMessage());
+                logger.error("详细错误信息: ", e);
+            }
         }
 
         // 2. 生成已取消订单
@@ -1797,8 +2298,23 @@ public class TimeoutStatisticsDataGenerator {
             request.setRecipientName(recipientName);
             request.setRecipientPhone(recipientPhone);
 
+            // 使用状态决定方法 - 代购订单不使用MERCHANT_PENDING
+            OrderStatus statusToSet = determinePurchaseStatus("CANCELLED_ORDER");
+
+            logger.info("==================== 代购订单[{}]状态详细信息 ====================", request.getRequestNumber());
+            logger.info("准备设置订单状态: {}", statusToSet);
+            logger.info("状态toString(): {}", statusToSet.toString());
+            logger.info("状态name(): {}", statusToSet.name());
+            logger.info("状态值在OrderStatus枚举中是否有效: {}", Arrays.asList(OrderStatus.values()).contains(statusToSet));
+            logger.info("===========================================================");
+
             // 设置为已取消状态
-            request.setStatus(OrderStatus.CANCELLED);
+            try {
+                request.setStatus(statusToSet);
+                logger.info("状态设置成功!");
+            } catch (Exception e) {
+                logger.error("设置状态时发生异常: {}", e.getMessage(), e);
+            }
 
             // 随机设置支付时间（50%概率未支付取消，50%概率已支付取消）
             if (random.nextBoolean()) {
@@ -1838,7 +2354,14 @@ public class TimeoutStatisticsDataGenerator {
             request.setTimeoutWarningSent(false);
             request.setTimeoutCount(0);
 
-            purchaseRequests.add(purchaseRequestRepository.save(request));
+            try {
+                PurchaseRequest savedRequest = purchaseRequestRepository.save(request);
+                logger.info("已取消代购订单保存成功，ID: {}", savedRequest.getId());
+                purchaseRequests.add(savedRequest);
+            } catch (Exception e) {
+                logger.error("保存已取消代购订单时出错: {}", e.getMessage());
+                logger.error("详细错误信息: ", e);
+            }
         }
 
         // 3. 生成支付待处理订单
@@ -1913,8 +2436,23 @@ public class TimeoutStatisticsDataGenerator {
             request.setRecipientName(recipientName);
             request.setRecipientPhone(recipientPhone);
 
+            // 使用状态决定方法 - 代购订单不使用MERCHANT_PENDING
+            OrderStatus statusToSet = determinePurchaseStatus("PAYMENT_NEEDED");
+
+            logger.info("==================== 代购订单[{}]状态详细信息 ====================", request.getRequestNumber());
+            logger.info("准备设置订单状态: {}", statusToSet);
+            logger.info("状态toString(): {}", statusToSet.toString());
+            logger.info("状态name(): {}", statusToSet.name());
+            logger.info("状态值在OrderStatus枚举中是否有效: {}", Arrays.asList(OrderStatus.values()).contains(statusToSet));
+            logger.info("===========================================================");
+
             // 设置状态为支付待处理
-            request.setStatus(OrderStatus.PAYMENT_PENDING);
+            try {
+                request.setStatus(statusToSet);
+                logger.info("状态设置成功!");
+            } catch (Exception e) {
+                logger.error("设置状态时发生异常: {}", e.getMessage(), e);
+            }
 
             // 设置费用信息
             BigDecimal deliveryFee = BigDecimal.valueOf(10 + random.nextInt(20)).setScale(2, RoundingMode.HALF_UP); // 10-30元
@@ -1940,7 +2478,14 @@ public class TimeoutStatisticsDataGenerator {
             request.setTimeoutWarningSent(false);
             request.setTimeoutCount(0);
 
-            purchaseRequests.add(purchaseRequestRepository.save(request));
+            try {
+                PurchaseRequest savedRequest = purchaseRequestRepository.save(request);
+                logger.info("支付待处理代购订单保存成功，ID: {}", savedRequest.getId());
+                purchaseRequests.add(savedRequest);
+            } catch (Exception e) {
+                logger.error("保存支付待处理代购订单时出错: {}", e.getMessage());
+                logger.error("详细错误信息: ", e);
+            }
         }
 
         // 4. 生成正常活跃订单（非超时）
@@ -2016,31 +2561,47 @@ public class TimeoutStatisticsDataGenerator {
             request.setRecipientName(recipientName);
             request.setRecipientPhone(recipientPhone);
 
-            // 随机设置不同的活跃状态
-            OrderStatus status;
+            // 根据情况决定状态场景 - 代购订单不使用MERCHANT_PENDING
+            String scenario;
             if (deliveryUser == null) {
                 // 未分配配送员时，状态只能是PENDING
-                status = OrderStatus.PENDING;
+                scenario = "PENDING_DELIVERY";
             } else {
                 // 已分配配送员，随机设置状态
-                OrderStatus[] activeStatuses = {
-                        OrderStatus.ASSIGNED, OrderStatus.IN_TRANSIT, OrderStatus.DELIVERED
+                String[] activeScenarios = {
+                        "ASSIGNED_DELIVERY", "IN_DELIVERY", "DELIVERED_ORDER"
                 };
-                status = activeStatuses[random.nextInt(activeStatuses.length)];
+                scenario = activeScenarios[random.nextInt(activeScenarios.length)];
             }
-            request.setStatus(status);
-            request.setAssignedUser(deliveryUser);
+
+            // 使用状态决定方法
+            OrderStatus statusToSet = determinePurchaseStatus(scenario);
+
+            logger.info("==================== 代购订单[{}]状态详细信息 ====================", request.getRequestNumber());
+            logger.info("场景: {}, 准备设置订单状态: {}", scenario, statusToSet);
+            logger.info("状态toString(): {}", statusToSet.toString());
+            logger.info("状态name(): {}", statusToSet.name());
+            logger.info("状态值在OrderStatus枚举中是否有效: {}", Arrays.asList(OrderStatus.values()).contains(statusToSet));
+            logger.info("===========================================================");
+
+            try {
+                request.setStatus(statusToSet);
+                request.setAssignedUser(deliveryUser);
+                logger.info("状态设置成功!");
+            } catch (Exception e) {
+                logger.error("设置状态时发生异常: {}", e.getMessage(), e);
+            }
 
             // 根据状态设置相应的时间
             LocalDateTime paymentTime = createdAt.plusMinutes(random.nextInt(60)); // 0-60分钟后支付
             request.setPaymentTime(paymentTime);
 
-            if (status == OrderStatus.IN_TRANSIT || status == OrderStatus.DELIVERED) {
+            if (statusToSet == OrderStatus.IN_TRANSIT || statusToSet == OrderStatus.DELIVERED) {
                 // 设置预计送达时间
                 request.setDeliveryTime(paymentTime.plusHours(1 + random.nextInt(24))); // 1-25小时后送达
             }
 
-            if (status == OrderStatus.DELIVERED) {
+            if (statusToSet == OrderStatus.DELIVERED) {
                 LocalDateTime deliveredDate = request.getDeliveryTime().plusMinutes(random.nextInt(120) - 60); // 提前或超出1小时送达
                 request.setDeliveredDate(deliveredDate);
             }
@@ -2075,7 +2636,14 @@ public class TimeoutStatisticsDataGenerator {
             request.setTimeoutWarningSent(false);
             request.setTimeoutCount(0);
 
-            purchaseRequests.add(purchaseRequestRepository.save(request));
+            try {
+                PurchaseRequest savedRequest = purchaseRequestRepository.save(request);
+                logger.info("活跃代购订单保存成功，ID: {}", savedRequest.getId());
+                purchaseRequests.add(savedRequest);
+            } catch (Exception e) {
+                logger.error("保存活跃代购订单时出错: {}", e.getMessage());
+                logger.error("详细错误信息: ", e);
+            }
         }
 
         // 5. 生成超时订单
@@ -2151,18 +2719,38 @@ public class TimeoutStatisticsDataGenerator {
             request.setRecipientName(recipientName);
             request.setRecipientPhone(recipientPhone);
 
-            // 设置配送员
-            request.setAssignedUser(deliveryUser);
-
-            // 设置状态和时间
+            // 根据循环索引选择不同的超时状态场景 - 代购订单不使用MERCHANT_PENDING
+            String scenario;
             if (i % 2 == 0) {
                 // 设置为平台介入状态
-                request.setStatus(OrderStatus.PLATFORM_INTERVENTION);
-                request.setInterventionTime(LocalDateTime.now().minusHours(random.nextInt(48)));
+                scenario = "DISPUTE";
             } else {
                 // 设置为其他活跃状态但已超时
-                OrderStatus[] activeStatuses = {OrderStatus.PENDING, OrderStatus.ASSIGNED, OrderStatus.IN_TRANSIT};
-                request.setStatus(activeStatuses[random.nextInt(activeStatuses.length)]);
+                String[] timeoutScenarios = {"PENDING_DELIVERY", "ASSIGNED_DELIVERY", "IN_DELIVERY"};
+                scenario = timeoutScenarios[random.nextInt(timeoutScenarios.length)];
+            }
+
+            // 使用状态决定方法
+            OrderStatus statusToSet = determinePurchaseStatus(scenario);
+
+            logger.info("==================== 超时代购订单[{}]状态详细信息 ====================", request.getRequestNumber());
+            logger.info("场景: {}, 准备设置订单状态: {}", scenario, statusToSet);
+            logger.info("状态toString(): {}", statusToSet.toString());
+            logger.info("状态name(): {}", statusToSet.name());
+            logger.info("状态值在OrderStatus枚举中是否有效: {}", Arrays.asList(OrderStatus.values()).contains(statusToSet));
+            logger.info("===========================================================");
+
+            // 设置配送员
+            try {
+                request.setAssignedUser(deliveryUser);
+                request.setStatus(statusToSet);
+                logger.info("状态设置成功!");
+            } catch (Exception e) {
+                logger.error("设置状态时发生异常: {}", e.getMessage(), e);
+            }
+
+            if (statusToSet == OrderStatus.PLATFORM_INTERVENTION) {
+                request.setInterventionTime(LocalDateTime.now().minusHours(random.nextInt(48)));
             }
 
             // 设置支付时间
@@ -2197,7 +2785,14 @@ public class TimeoutStatisticsDataGenerator {
             request.setTimeoutWarningSent(true);
             request.setTimeoutCount(1 + random.nextInt(3)); // 1-3次超时
 
-            purchaseRequests.add(purchaseRequestRepository.save(request));
+            try {
+                PurchaseRequest savedRequest = purchaseRequestRepository.save(request);
+                logger.info("超时代购订单保存成功，ID: {}", savedRequest.getId());
+                purchaseRequests.add(savedRequest);
+            } catch (Exception e) {
+                logger.error("保存超时代购订单时出错: {}", e.getMessage());
+                logger.error("详细错误信息: ", e);
+            }
         }
 
         return purchaseRequests;

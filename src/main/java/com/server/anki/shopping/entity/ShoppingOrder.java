@@ -10,6 +10,7 @@ import com.server.anki.timeout.core.TimeoutOrderType;
 import com.server.anki.timeout.core.Timeoutable;
 import com.server.anki.timeout.enums.TimeoutStatus;
 import com.server.anki.user.User;
+import com.server.anki.utils.OrderStatusStringConverter;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
@@ -75,6 +76,7 @@ public class ShoppingOrder implements FeeableOrder, Timeoutable {
     @Column(name = "delivery_type", nullable = false)
     private DeliveryType deliveryType;
 
+    @Convert(converter = OrderStatusStringConverter.class) // 添加这一行
     @Enumerated(EnumType.STRING)
     @Column(name = "order_status", nullable = false)
     private OrderStatus orderStatus;

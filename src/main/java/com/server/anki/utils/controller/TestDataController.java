@@ -58,10 +58,10 @@ public class TestDataController {
 
             // 通过身份验证和权限检查，开始生成测试数据
             logger.info("管理员 {} 开始生成测试数据", user.getId());
-            dataGenerator.generateTestData();
-            logger.info("测试数据生成完成");
+            int recordCount = dataGenerator.generateTestData();
+            logger.info("测试数据生成完成，共生成 {} 条数据", recordCount);
 
-            return ResponseEntity.ok("超时统计系统测试数据生成成功，已创建约700条订单数据");
+            return ResponseEntity.ok(String.format("超时统计系统测试数据生成成功，已创建 %d 条订单数据", recordCount));
         } catch (Exception e) {
             logger.error("生成测试数据时发生错误", e);
             return ResponseEntity.internalServerError().body("生成测试数据时发生错误: " + e.getMessage());
