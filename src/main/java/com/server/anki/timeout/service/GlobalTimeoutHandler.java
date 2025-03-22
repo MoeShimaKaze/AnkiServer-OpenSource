@@ -1,7 +1,7 @@
 package com.server.anki.timeout.service;
 
 import com.server.anki.fee.calculator.TimeoutFeeCalculator;
-import com.server.anki.fee.model.TimeoutType;
+import com.server.anki.fee.model.FeeTimeoutType;
 import com.server.anki.mailorder.entity.MailOrder;
 import com.server.anki.mailorder.enums.OrderStatus;
 import com.server.anki.mailorder.service.MailOrderService;
@@ -70,9 +70,7 @@ public class GlobalTimeoutHandler {
 
     /**
      * 处理超时检查结果
-     * @param order 订单
-     * @param result 超时检查结果
-     * 修改：移除了@Transactional注解，由调用者控制事务
+     * 整合了OrderTimeoutHandler的逻辑
      */
     public void handleTimeoutResult(Timeoutable order, TimeoutResults.TimeoutCheckResult result) {
         if (result.status() == TimeoutStatus.NORMAL) {
@@ -89,7 +87,7 @@ public class GlobalTimeoutHandler {
                 default -> logger.debug("当前状态无需处理: {}", result.status());
             }
 
-// 发送超时事件以更新统计
+            // 发送超时事件以更新统计
             if (result.isTimeout()) {
                 Long userId = order.getAssignedUser() != null ? order.getAssignedUser().getId() : null;
                 // 这里可以发布事件更新统计
@@ -104,9 +102,8 @@ public class GlobalTimeoutHandler {
 
     /**
      * 处理取件超时
-     * @param order 订单
+     * 整合了OrderTimeoutHandler的处理逻辑
      */
-    @Transactional(propagation = Propagation.REQUIRED)
     protected void handlePickupTimeout(Timeoutable order) {
         TimeoutOrderType orderType = order.getTimeoutOrderType();
         logger.info("处理{}订单的取件超时: {}", orderType.getShortName(), order.getOrderNumber());
@@ -133,11 +130,12 @@ public class GlobalTimeoutHandler {
 
     /**
      * 处理快递代拿订单的取件超时
+     * 从OrderTimeoutHandler迁移的逻辑
      */
     private void handleMailOrderPickupTimeout(MailOrder order) {
         if (order.getAssignedUser() != null) {
             // 计算超时费用
-            BigDecimal timeoutFee = calculateTimeoutFee(order, TimeoutType.PICKUP);
+            BigDecimal timeoutFee = calculateTimeoutFee(order, FeeTimeoutType.PICKUP);
 
             if (timeoutFee.compareTo(BigDecimal.ZERO) > 0) {
                 processTimeoutFee(order, timeoutFee, "取件超时罚金");
@@ -145,6 +143,13 @@ public class GlobalTimeoutHandler {
 
             // 调用服务方法重置订单
             mailOrderService.resetOrderForReassignment(order);
+
+            // 判断归档条件：STANDARD≥10次，EXPRESS≥3次
+            int archiveThreshold = order.getDeliveryService() == com.server.anki.mailorder.enums.DeliveryService.STANDARD ? 10 : 3;
+            if (order.getTimeoutCount() >= archiveThreshold) {
+                mailOrderService.archiveOrder(order);
+                logger.info("订单 {} 超过超时阈值 {}，已归档", order.getOrderNumber(), archiveThreshold);
+            }
         }
     }
 
@@ -154,7 +159,7 @@ public class GlobalTimeoutHandler {
     private void handleShoppingOrderPickupTimeout(ShoppingOrder order) {
         if (order.getAssignedUser() != null) {
             // 计算超时费用
-            BigDecimal timeoutFee = calculateTimeoutFee(order, TimeoutType.PICKUP);
+            BigDecimal timeoutFee = calculateTimeoutFee(order, FeeTimeoutType.PICKUP);
 
             if (timeoutFee.compareTo(BigDecimal.ZERO) > 0) {
                 processTimeoutFee(order, timeoutFee, "商品取件超时罚金");
@@ -171,7 +176,7 @@ public class GlobalTimeoutHandler {
     private void handlePurchaseRequestPickupTimeout(PurchaseRequest order) {
         if (order.getAssignedUser() != null) {
             // 计算超时费用
-            BigDecimal timeoutFee = calculateTimeoutFee(order, TimeoutType.PICKUP);
+            BigDecimal timeoutFee = calculateTimeoutFee(order, FeeTimeoutType.PICKUP);
 
             if (timeoutFee.compareTo(BigDecimal.ZERO) > 0) {
                 processTimeoutFee(order, timeoutFee, "代购超时罚金");
@@ -184,9 +189,7 @@ public class GlobalTimeoutHandler {
 
     /**
      * 处理配送超时
-     * @param order 订单
      */
-    @Transactional(propagation = Propagation.REQUIRED)
     protected void handleDeliveryTimeout(Timeoutable order) {
         TimeoutOrderType orderType = order.getTimeoutOrderType();
         logger.info("处理{}订单的配送超时: {}", orderType.getShortName(), order.getOrderNumber());
@@ -197,7 +200,7 @@ public class GlobalTimeoutHandler {
             saveOrder(order);
 
             // 计算超时费用
-            BigDecimal timeoutFee = calculateTimeoutFee(order, TimeoutType.DELIVERY);
+            BigDecimal timeoutFee = calculateTimeoutFee(order, FeeTimeoutType.DELIVERY);
 
             if (timeoutFee.compareTo(BigDecimal.ZERO) > 0) {
                 processTimeoutFee(order, timeoutFee, orderType.getShortName() + "配送超时罚金");
@@ -254,6 +257,7 @@ public class GlobalTimeoutHandler {
 
     /**
      * 处理超时警告
+     * 从OrderTimeoutHandler迁移的逻辑
      */
     protected void handleTimeoutWarning(Timeoutable order, TimeoutStatus status,
                                         com.server.anki.timeout.enums.TimeoutType type) {
@@ -262,8 +266,8 @@ public class GlobalTimeoutHandler {
         // 检查是否需要发送新警告
         if (shouldSendNewWarning(existingWarning, status)) {
             // 转换为新的TimeoutType并估算潜在的超时费用
-            TimeoutType newTimeoutType = convertToNewTimeoutType(type);
-            BigDecimal estimatedFee = calculateTimeoutFee(order, newTimeoutType);
+            FeeTimeoutType newFeeTimeoutType = convertToNewTimeoutType(type);
+            BigDecimal estimatedFee = calculateTimeoutFee(order, newFeeTimeoutType);
 
             // 发送警告通知
             sendTimeoutWarning(order, status, estimatedFee);
@@ -334,7 +338,6 @@ public class GlobalTimeoutHandler {
 
     /**
      * 保存不同类型的订单
-     * 修改：增加测试标记检测逻辑，并修复类型转换的安全性问题
      */
     private void saveOrder(Timeoutable order) {
         boolean isTestOrder = false;
@@ -399,9 +402,6 @@ public class GlobalTimeoutHandler {
 
     /**
      * 判断是否应该使用直接保存方式
-     * 当遇到验证类异常或特定业务异常时，返回true
-     * @param e 捕获到的异常
-     * @return 是否应该尝试直接保存
      */
     private boolean shouldUseDirectSave(Exception e) {
         // 检查是否为验证异常
@@ -423,8 +423,6 @@ public class GlobalTimeoutHandler {
         String exceptionName = e.getClass().getSimpleName();
         return exceptionName.contains("NotFoundException") ||
                 exceptionName.contains("ValidationException");
-
-        // 默认不使用直接保存，让异常继续传播
     }
 
     /**
@@ -462,7 +460,6 @@ public class GlobalTimeoutHandler {
             );
 
             // 增加平台收入
-            // 注意：不同类型订单的字段名可能不同，这里需要根据实际情况调整
             switch (order.getTimeoutOrderType()) {
                 case MAIL_ORDER -> {
                     MailOrder mailOrder = (MailOrder) order;
@@ -501,16 +498,16 @@ public class GlobalTimeoutHandler {
     /**
      * 计算超时费用
      */
-    private BigDecimal calculateTimeoutFee(Timeoutable order, TimeoutType timeoutType) {
+    private BigDecimal calculateTimeoutFee(Timeoutable order, FeeTimeoutType feeTimeoutType) {
         // 对于不同类型的订单可能需要不同的费用计算逻辑
         if (order.getTimeoutOrderType() == TimeoutOrderType.MAIL_ORDER) {
-            return timeoutFeeCalculator.calculateTimeoutFee((MailOrder) order, timeoutType);
+            return timeoutFeeCalculator.calculateTimeoutFee((MailOrder) order, feeTimeoutType);
         }
 
         // 对于其他类型的订单，基于订单金额计算罚款
         BigDecimal baseFee = getBigDecimalByOrderType(order);
 
-        if (timeoutType == TimeoutType.DELIVERY) {
+        if (feeTimeoutType == FeeTimeoutType.DELIVERY) {
             // 配送超时罚款加倍
             return baseFee.multiply(BigDecimal.valueOf(2));
         }
@@ -599,19 +596,19 @@ public class GlobalTimeoutHandler {
     /**
      * 将旧的TimeoutType转换为新的TimeoutType
      */
-    private TimeoutType convertToNewTimeoutType(com.server.anki.timeout.enums.TimeoutType oldType) {
+    private FeeTimeoutType convertToNewTimeoutType(com.server.anki.timeout.enums.TimeoutType oldType) {
         if (oldType == null) {
             logger.warn("收到空的超时类型，将默认使用 CONFIRMATION 类型");
-            return TimeoutType.CONFIRMATION;
+            return FeeTimeoutType.CONFIRMATION;
         }
 
         return switch (oldType) {
-            case PICKUP -> TimeoutType.PICKUP;
-            case DELIVERY -> TimeoutType.DELIVERY;
-            case CONFIRMATION -> TimeoutType.CONFIRMATION;
+            case PICKUP -> FeeTimeoutType.PICKUP;
+            case DELIVERY -> FeeTimeoutType.DELIVERY;
+            case CONFIRMATION -> FeeTimeoutType.CONFIRMATION;
             case INTERVENTION -> {
                 logger.warn("收到干预类型的超时，将转换为 DELIVERY 类型进行处理");
-                yield TimeoutType.DELIVERY;
+                yield FeeTimeoutType.DELIVERY;
             }
         };
     }

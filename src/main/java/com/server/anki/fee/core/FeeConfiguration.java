@@ -1,7 +1,7 @@
 package com.server.anki.fee.core;
 
 import com.server.anki.fee.model.FeeType;
-import com.server.anki.fee.model.TimeoutType;
+import com.server.anki.fee.model.FeeTimeoutType;
 import com.server.anki.marketing.SpecialDateService;
 import com.server.anki.marketing.region.RegionService;
 import com.server.anki.marketing.region.model.RegionRateResult;
@@ -74,7 +74,7 @@ public class FeeConfiguration {
      */
     @Data
     public static class TimeoutConfig {
-        private Map<FeeType, Map<TimeoutType, BigDecimal>> timeoutFees; // 超时费用
+        private Map<FeeType, Map<FeeTimeoutType, BigDecimal>> timeoutFees; // 超时费用
         private Map<FeeType, BigDecimal> largeItemTimeoutMultipliers;   // 大件超时倍率
         private Map<FeeType, BigDecimal> weightTimeoutMultipliers;      // 重量超时倍率
         private BigDecimal holidayMultiplier;                           // 节假日倍率
@@ -246,15 +246,15 @@ public class FeeConfiguration {
     // 以下是所有原有的Getter方法
 
     public BigDecimal getPickupTimeoutFee(FeeType feeType) {
-        return timeoutConfig.getTimeoutFees().get(feeType).get(TimeoutType.PICKUP);
+        return timeoutConfig.getTimeoutFees().get(feeType).get(FeeTimeoutType.PICKUP);
     }
 
     public BigDecimal getDeliveryTimeoutFee(FeeType feeType) {
-        return timeoutConfig.getTimeoutFees().get(feeType).get(TimeoutType.DELIVERY);
+        return timeoutConfig.getTimeoutFees().get(feeType).get(FeeTimeoutType.DELIVERY);
     }
 
     public BigDecimal getConfirmationTimeoutFee(FeeType feeType) {
-        return timeoutConfig.getTimeoutFees().get(feeType).get(TimeoutType.CONFIRMATION);
+        return timeoutConfig.getTimeoutFees().get(feeType).get(FeeTimeoutType.CONFIRMATION);
     }
 
     public BigDecimal getLargeItemTimeoutMultiplier(FeeType feeType) {

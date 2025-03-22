@@ -3,7 +3,7 @@ package com.server.anki.fee.calculator;
 import com.server.anki.fee.core.FeeConfiguration;
 import com.server.anki.fee.model.FeeType;
 import com.server.anki.fee.model.FeeableOrder;
-import com.server.anki.fee.model.TimeoutType;
+import com.server.anki.fee.model.FeeTimeoutType;
 import com.server.anki.marketing.SpecialDateService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,15 +37,15 @@ public class TimeoutFeeCalculator {
     /**
      * 计算超时费用
      */
-    public BigDecimal calculateTimeoutFee(FeeableOrder order, TimeoutType timeoutType) {
+    public BigDecimal calculateTimeoutFee(FeeableOrder order, FeeTimeoutType feeTimeoutType) {
         logger.debug("开始计算订单 {} 的超时费用, 类型: {}",
-                order.getOrderNumber(), timeoutType);
+                order.getOrderNumber(), feeTimeoutType);
 
         // 1. 获取基础超时费用
-        BigDecimal baseFee = getBaseTimeoutFee(timeoutType, order.getFeeType());
+        BigDecimal baseFee = getBaseTimeoutFee(feeTimeoutType, order.getFeeType());
 
         // 2. 获取超时开始时间
-        LocalDateTime startTime = getTimeoutStartTime(order, timeoutType);
+        LocalDateTime startTime = getTimeoutStartTime(order, feeTimeoutType);
 
         // 3. 计算最终费用
         BigDecimal timeoutFee = calculateFinalTimeoutFee(order, baseFee, startTime);
@@ -57,8 +57,8 @@ public class TimeoutFeeCalculator {
     /**
      * 获取基础超时费用
      */
-    private BigDecimal getBaseTimeoutFee(TimeoutType timeoutType, FeeType feeType) {
-        return switch (timeoutType) {
+    private BigDecimal getBaseTimeoutFee(FeeTimeoutType feeTimeoutType, FeeType feeType) {
+        return switch (feeTimeoutType) {
             case PICKUP -> config.getPickupTimeoutFee(feeType);
             case DELIVERY -> config.getDeliveryTimeoutFee(feeType);
             case CONFIRMATION -> config.getConfirmationTimeoutFee(feeType);
@@ -68,8 +68,8 @@ public class TimeoutFeeCalculator {
     /**
      * 获取超时开始时间
      */
-    private LocalDateTime getTimeoutStartTime(FeeableOrder order, TimeoutType timeoutType) {
-        return switch (timeoutType) {
+    private LocalDateTime getTimeoutStartTime(FeeableOrder order, FeeTimeoutType feeTimeoutType) {
+        return switch (feeTimeoutType) {
             case PICKUP -> order.getCreatedTime();
             case DELIVERY -> order.getExpectedDeliveryTime();
             case CONFIRMATION -> order.getDeliveredTime();
@@ -192,16 +192,16 @@ public class TimeoutFeeCalculator {
     /**
      * 估算超时费用
      */
-    public BigDecimal estimateTimeoutFee(FeeableOrder order, TimeoutType timeoutType) {
-        BigDecimal baseFee = getBaseTimeoutFee(timeoutType, order.getFeeType());
+    public BigDecimal estimateTimeoutFee(FeeableOrder order, FeeTimeoutType feeTimeoutType) {
+        BigDecimal baseFee = getBaseTimeoutFee(feeTimeoutType, order.getFeeType());
         return applyItemCharacteristics(baseFee, order);
     }
 
     /**
      * 获取超时时限(分钟)
      */
-    public long getTimeoutMinutes(FeeableOrder order, TimeoutType timeoutType) {
-        return switch (timeoutType) {
+    public long getTimeoutMinutes(FeeableOrder order, FeeTimeoutType feeTimeoutType) {
+        return switch (feeTimeoutType) {
             case PICKUP -> config.getPickupTimeout(order.getFeeType());
             case DELIVERY -> config.getDeliveryTimeout(order.getFeeType());
             case CONFIRMATION -> config.getConfirmationTimeout(order.getFeeType());

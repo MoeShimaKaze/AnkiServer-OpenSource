@@ -5,7 +5,7 @@ import com.server.anki.mailorder.repository.MailOrderRepository;
 import com.server.anki.timeout.entity.TimeoutResults;
 import com.server.anki.timeout.enums.TimeoutStatus;
 import com.server.anki.fee.calculator.TimeoutFeeCalculator;
-import com.server.anki.fee.model.TimeoutType;
+import com.server.anki.fee.model.FeeTimeoutType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -45,8 +45,8 @@ public class OrderTimeoutWarningManager {
         // 检查是否需要发送新警告
         if (shouldSendNewWarning(existingWarning, status)) {
             // 转换为新的TimeoutType并估算潜在的超时费用
-            TimeoutType newTimeoutType = convertToNewTimeoutType(oldType);
-            BigDecimal estimatedFee = timeoutFeeCalculator.estimateTimeoutFee(order, newTimeoutType);
+            FeeTimeoutType newFeeTimeoutType = convertToNewTimeoutType(oldType);
+            BigDecimal estimatedFee = timeoutFeeCalculator.estimateTimeoutFee(order, newFeeTimeoutType);
 
             // 发送警告通知
             sendTimeoutWarning(order, status, estimatedFee);
@@ -93,19 +93,19 @@ public class OrderTimeoutWarningManager {
     /**
      * 将旧的TimeoutType转换为新的TimeoutType
      */
-    private TimeoutType convertToNewTimeoutType(com.server.anki.timeout.enums.TimeoutType oldType) {
+    private FeeTimeoutType convertToNewTimeoutType(com.server.anki.timeout.enums.TimeoutType oldType) {
         if (oldType == null) {
             logger.warn("收到空的超时类型，将默认使用 CONFIRMATION 类型");
-            return TimeoutType.CONFIRMATION;
+            return FeeTimeoutType.CONFIRMATION;
         }
 
         return switch (oldType) {
-            case PICKUP -> TimeoutType.PICKUP;
-            case DELIVERY -> TimeoutType.DELIVERY;
-            case CONFIRMATION -> TimeoutType.CONFIRMATION;
+            case PICKUP -> FeeTimeoutType.PICKUP;
+            case DELIVERY -> FeeTimeoutType.DELIVERY;
+            case CONFIRMATION -> FeeTimeoutType.CONFIRMATION;
             case INTERVENTION -> {
                 logger.warn("收到干预类型的超时，将转换为 DELIVERY 类型进行处理");
-                yield TimeoutType.DELIVERY;
+                yield FeeTimeoutType.DELIVERY;
             }
         };
     }
