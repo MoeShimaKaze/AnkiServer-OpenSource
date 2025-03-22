@@ -15,8 +15,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -81,7 +79,6 @@ public class OrderTimeoutHandler {
      * 处理取件超时
      * 根据不同的配送类型和超时次数执行不同的处理逻辑
      */
-    @Transactional(propagation = Propagation.REQUIRED)
     public void handlePickupTimeout(MailOrder order) {
         logger.info("处理订单 {} 的取件超时", order.getOrderNumber());
         try {
@@ -131,7 +128,6 @@ public class OrderTimeoutHandler {
      * 处理配送超时
      * 计算并处理超时费用,EXPRESS订单需要平台介入
      */
-    @Transactional(propagation = Propagation.REQUIRED)
     public void handleDeliveryTimeout(MailOrder order) {
         logger.info("处理订单 {} 的配送超时", order.getOrderNumber());
 
@@ -184,7 +180,6 @@ public class OrderTimeoutHandler {
     /**
      * 更新订单为平台介入状态
      */
-    @Transactional(propagation = Propagation.REQUIRED)
     public void updateToIntervention(MailOrder order) {
         logger.info("正在将订单 {} 更新为平台介入状态", order.getOrderNumber());
 

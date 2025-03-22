@@ -388,21 +388,39 @@ public class OrderArchiveService {
         Optional<DeliveryRegion> deliveryRegion = Optional.empty();
 
         try {
-            // 仅在经纬度都不为null时才尝试查找区域
+            // 仅在经纬度都不为null且在有效范围内时才尝试查找区域
             if (order.getPickupLongitude() != null && order.getPickupLatitude() != null) {
-                String pickupCoordinate = String.format("%.6f,%.6f", order.getPickupLongitude(), order.getPickupLatitude());
+                if (isValidCoordinateRange(order.getPickupLongitude(), order.getPickupLatitude())) {
+                    String pickupCoordinate = String.format("%.6f,%.6f", order.getPickupLongitude(), order.getPickupLatitude());
 
-                // 使用RegionService查找区域（它已正确使用MySQLSpatialUtils）
-                if (MySQLSpatialUtils.validateCoordinate(pickupCoordinate)) {
-                    pickupRegion = regionService.findRegionByCoordinate(pickupCoordinate);
+                    // 使用RegionService查找区域前进行严格验证
+                    if (MySQLSpatialUtils.validateCoordinate(pickupCoordinate)) {
+                        try {
+                            pickupRegion = regionService.findRegionByCoordinate(pickupCoordinate);
+                        } catch (IllegalArgumentException e) {
+                            logger.warn("取件点坐标格式无效: {}", pickupCoordinate);
+                        }
+                    }
+                } else {
+                    logger.warn("取件点坐标超出有效范围: 经度={}, 纬度={}",
+                            order.getPickupLongitude(), order.getPickupLatitude());
                 }
             }
 
             if (order.getDeliveryLongitude() != null && order.getDeliveryLatitude() != null) {
-                String deliveryCoordinate = String.format("%.6f,%.6f", order.getDeliveryLongitude(), order.getDeliveryLatitude());
+                if (isValidCoordinateRange(order.getDeliveryLongitude(), order.getDeliveryLatitude())) {
+                    String deliveryCoordinate = String.format("%.6f,%.6f", order.getDeliveryLongitude(), order.getDeliveryLatitude());
 
-                if (MySQLSpatialUtils.validateCoordinate(deliveryCoordinate)) {
-                    deliveryRegion = regionService.findRegionByCoordinate(deliveryCoordinate);
+                    if (MySQLSpatialUtils.validateCoordinate(deliveryCoordinate)) {
+                        try {
+                            deliveryRegion = regionService.findRegionByCoordinate(deliveryCoordinate);
+                        } catch (IllegalArgumentException e) {
+                            logger.warn("配送点坐标格式无效: {}", deliveryCoordinate);
+                        }
+                    }
+                } else {
+                    logger.warn("配送点坐标超出有效范围: 经度={}, 纬度={}",
+                            order.getDeliveryLongitude(), order.getDeliveryLatitude());
                 }
             }
         } catch (Exception e) {
@@ -419,6 +437,13 @@ public class OrderArchiveService {
                 pickupRegion.isPresent() && deliveryRegion.isPresent() &&
                         !pickupRegion.get().getId().equals(deliveryRegion.get().getId())
         );
+    }
+
+    // 添加坐标范围验证方法
+    private boolean isValidCoordinateRange(Double longitude, Double latitude) {
+        // 经度范围: -180 到 180
+        // 纬度范围: -90 到 90
+        return longitude >= -180 && longitude <= 180 && latitude >= -90 && latitude <= 90;
     }
 
     private void copyTimeRangeInformation(MailOrder order, AbandonedOrder abandonedOrder) {
@@ -444,17 +469,5 @@ public class OrderArchiveService {
                 abandonedOrder.setSpecialDateRate(specialDate.getRateMultiplier());
             }
         }
-    }
-
-    // 辅助方法
-
-    /**
-     * 格式化坐标为高德地图API格式
-     */
-    private String formatCoordinate(Double longitude, Double latitude) {
-        if (longitude == null || latitude == null) {
-            return null;
-        }
-        return String.format("%.6f,%.6f", longitude, latitude);
     }
 }

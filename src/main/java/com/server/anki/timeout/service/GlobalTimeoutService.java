@@ -18,6 +18,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
@@ -51,6 +52,7 @@ public class GlobalTimeoutService {
 
     @Autowired
     private PlatformTransactionManager transactionManager;
+
     /**
      * 定时检查所有类型订单的超时情况
      * 修改：使用TransactionTemplate为每个订单创建独立事务
@@ -75,6 +77,8 @@ public class GlobalTimeoutService {
                 o2.getTimeoutOrderType().getPriority() - o1.getTimeoutOrderType().getPriority());
 
         TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+        // 设置事务传播行为为REQUIRES_NEW，确保每个订单都在独立事务中处理
+        transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
 
         int processedCount = 0;
         int successCount = 0;
@@ -82,7 +86,7 @@ public class GlobalTimeoutService {
 
         for (Timeoutable order : activeOrders) {
             try {
-                transactionTemplate.execute(status -> {
+                Boolean result = transactionTemplate.execute(status -> {
                     try {
                         TimeoutResults.TimeoutCheckResult checkResult = checkOrderTimeout(order, now);
                         if (checkResult.status() != TimeoutStatus.NORMAL) {
@@ -97,7 +101,11 @@ public class GlobalTimeoutService {
                     }
                 });
 
-                successCount++;
+                if (Boolean.TRUE.equals(result)) {
+                    successCount++;
+                } else {
+                    failureCount++;
+                }
             } catch (Exception e) {
                 failureCount++;
                 logger.error("处理订单 {} 时事务执行失败: {}",
