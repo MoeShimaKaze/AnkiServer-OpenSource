@@ -382,50 +382,58 @@ public class OrderArchiveService {
         abandonedOrder.setRegionMultiplier(order.getRegionMultiplier());
     }
 
+    /**
+     * 复制区域信息
+     * 增强版本：改进错误处理和坐标验证
+     */
     private void copyRegionInformation(MailOrder order, AbandonedOrder abandonedOrder) {
         // 初始化变量
         Optional<DeliveryRegion> pickupRegion = Optional.empty();
         Optional<DeliveryRegion> deliveryRegion = Optional.empty();
 
         try {
-            // 仅在经纬度都不为null且在有效范围内时才尝试查找区域
+            // 安全处理取件点坐标
             if (order.getPickupLongitude() != null && order.getPickupLatitude() != null) {
-                if (isValidCoordinateRange(order.getPickupLongitude(), order.getPickupLatitude())) {
-                    String pickupCoordinate = String.format("%.6f,%.6f", order.getPickupLongitude(), order.getPickupLatitude());
+                // 格式化坐标
+                String pickupCoordinate = String.format("%.6f,%.6f",
+                        order.getPickupLongitude(), order.getPickupLatitude());
 
-                    // 使用RegionService查找区域前进行严格验证
-                    if (MySQLSpatialUtils.validateCoordinate(pickupCoordinate)) {
-                        try {
-                            pickupRegion = regionService.findRegionByCoordinate(pickupCoordinate);
-                        } catch (IllegalArgumentException e) {
-                            logger.warn("取件点坐标格式无效: {}", pickupCoordinate);
-                        }
+                // 验证坐标
+                if (MySQLSpatialUtils.validateCoordinate(pickupCoordinate)) {
+                    try {
+                        pickupRegion = regionService.findRegionByCoordinate(pickupCoordinate);
+                    } catch (Exception e) {
+                        logger.warn("查询取件点区域时发生错误: {}", e.getMessage());
                     }
                 } else {
-                    logger.warn("取件点坐标超出有效范围: 经度={}, 纬度={}",
-                            order.getPickupLongitude(), order.getPickupLatitude());
+                    logger.warn("取件点坐标格式无效: {}", pickupCoordinate);
                 }
+            } else {
+                logger.debug("取件点缺少经纬度信息");
             }
 
+            // 安全处理配送点坐标
             if (order.getDeliveryLongitude() != null && order.getDeliveryLatitude() != null) {
-                if (isValidCoordinateRange(order.getDeliveryLongitude(), order.getDeliveryLatitude())) {
-                    String deliveryCoordinate = String.format("%.6f,%.6f", order.getDeliveryLongitude(), order.getDeliveryLatitude());
+                // 格式化坐标
+                String deliveryCoordinate = String.format("%.6f,%.6f",
+                        order.getDeliveryLongitude(), order.getDeliveryLatitude());
 
-                    if (MySQLSpatialUtils.validateCoordinate(deliveryCoordinate)) {
-                        try {
-                            deliveryRegion = regionService.findRegionByCoordinate(deliveryCoordinate);
-                        } catch (IllegalArgumentException e) {
-                            logger.warn("配送点坐标格式无效: {}", deliveryCoordinate);
-                        }
+                // 验证坐标
+                if (MySQLSpatialUtils.validateCoordinate(deliveryCoordinate)) {
+                    try {
+                        deliveryRegion = regionService.findRegionByCoordinate(deliveryCoordinate);
+                    } catch (Exception e) {
+                        logger.warn("查询配送点区域时发生错误: {}", e.getMessage());
                     }
                 } else {
-                    logger.warn("配送点坐标超出有效范围: 经度={}, 纬度={}",
-                            order.getDeliveryLongitude(), order.getDeliveryLatitude());
+                    logger.warn("配送点坐标格式无效: {}", deliveryCoordinate);
                 }
+            } else {
+                logger.debug("配送点缺少经纬度信息");
             }
         } catch (Exception e) {
             logger.warn("查询区域信息时发生错误: {}", e.getMessage());
-            // 错误不影响继续执行
+            // 错误不中断归档流程
         }
 
         // 设置区域信息（即使找不到区域也能继续）
@@ -437,13 +445,6 @@ public class OrderArchiveService {
                 pickupRegion.isPresent() && deliveryRegion.isPresent() &&
                         !pickupRegion.get().getId().equals(deliveryRegion.get().getId())
         );
-    }
-
-    // 添加坐标范围验证方法
-    private boolean isValidCoordinateRange(Double longitude, Double latitude) {
-        // 经度范围: -180 到 180
-        // 纬度范围: -90 到 90
-        return longitude >= -180 && longitude <= 180 && latitude >= -90 && latitude <= 90;
     }
 
     private void copyTimeRangeInformation(MailOrder order, AbandonedOrder abandonedOrder) {

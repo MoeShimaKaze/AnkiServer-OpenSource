@@ -34,53 +34,85 @@ public class RegionService {
 
     /**
      * 根据高德地图坐标查找区域
-     * 使用缓存提高性能
+     * 增强版本：强化错误处理和坐标验证
      */
     @Cacheable(value = "region", key = "#amapCoordinate")
     public Optional<DeliveryRegion> findRegionByCoordinate(String amapCoordinate) {
-        logger.debug("查找坐标[{}]所在的配送区域", amapCoordinate);
+        log.debug("查找坐标[{}]所在的配送区域", amapCoordinate);
 
-        if (!MySQLSpatialUtils.validateCoordinate(amapCoordinate)) {
-            throw new IllegalArgumentException("无效的坐标格式");
+        if (amapCoordinate == null || amapCoordinate.trim().isEmpty()) {
+            log.warn("收到空坐标，返回空区域");
+            return Optional.empty();
         }
 
-        String point = MySQLSpatialUtils.createPointFromAmapCoordinate(amapCoordinate);
-        Optional<DeliveryRegion> region = regionRepository.findRegionContainingPoint(point);
+        // 使用工具类验证坐标
+        if (!MySQLSpatialUtils.validateCoordinate(amapCoordinate)) {
+            log.warn("无效的坐标格式: {}", amapCoordinate);
+            return Optional.empty();
+        }
 
-        // 处理检索到的区域，确保边界点被正确填充
-        region.ifPresent(this::ensureBoundaryPointsPopulated);
+        try {
+            // 创建MySQL空间点查询
+            String point = MySQLSpatialUtils.createPointFromAmapCoordinate(amapCoordinate);
+            Optional<DeliveryRegion> region = regionRepository.findRegionContainingPoint(point);
 
-        logger.debug("坐标[{}]{}",
-                amapCoordinate,
-                region.map(r -> "位于" + r.getName() + "区域内").orElse("不在任何配送区域内")
-        );
+            // 处理检索到的区域，确保边界点被正确填充
+            region.ifPresent(this::ensureBoundaryPointsPopulated);
 
-        return region;
+            log.debug("坐标[{}]{}",
+                    amapCoordinate,
+                    region.map(r -> "位于" + r.getName() + "区域内").orElse("不在任何配送区域内")
+            );
+
+            return region;
+        } catch (Exception e) {
+            log.warn("查询区域时发生错误: {} - {}", e.getClass().getName(), e.getMessage());
+            return Optional.empty();
+        }
     }
+
 
     /**
      * 计算订单的区域费率
-     * @param pickupCoordinate 取件点坐标
-     * @param deliveryCoordinate 配送点坐标
-     * @return 费率计算结果
+     * 增强版本：强化错误处理和防御性编程
      */
     @SuppressWarnings("SpringCacheableMethodCallsInspection")
     public RegionRateResult calculateOrderRegionRate(String pickupCoordinate,
                                                      String deliveryCoordinate) {
-        logger.debug("计算订单区域费率: 取件点[{}], 配送点[{}]",
+        log.debug("计算订单区域费率: 取件点[{}], 配送点[{}]",
                 pickupCoordinate, deliveryCoordinate);
 
-        // 查找取件点和配送点所在的区域
-        Optional<DeliveryRegion> pickupRegion = findRegionByCoordinate(pickupCoordinate);
-        Optional<DeliveryRegion> deliveryRegion = findRegionByCoordinate(deliveryCoordinate);
+        // 临时保存查询结果，避免多次查询
+        Optional<DeliveryRegion> pickupRegion = Optional.empty();
+        Optional<DeliveryRegion> deliveryRegion = Optional.empty();
+
+        // 安全查询取件点区域
+        if (pickupCoordinate != null && !pickupCoordinate.isEmpty()) {
+            try {
+                pickupRegion = findRegionByCoordinate(pickupCoordinate);
+            } catch (Exception e) {
+                log.warn("查询取件点区域时发生错误: {}", e.getMessage());
+                // 错误不中断流程
+            }
+        }
+
+        // 安全查询配送点区域
+        if (deliveryCoordinate != null && !deliveryCoordinate.isEmpty()) {
+            try {
+                deliveryRegion = findRegionByCoordinate(deliveryCoordinate);
+            } catch (Exception e) {
+                log.warn("查询配送点区域时发生错误: {}", e.getMessage());
+                // 错误不中断流程
+            }
+        }
 
         // 如果都不在任何划定区域内，使用默认费率
         if (pickupRegion.isEmpty() && deliveryRegion.isEmpty()) {
-            logger.debug("取件点和配送点均不在已划定的配送区域内，使用默认费率");
+            log.debug("取件点和配送点均不在已划定的配送区域内，使用默认费率");
             return new RegionRateResult(1.0, false, null, null);
         }
 
-        // 获取取件点和配送点的费率
+        // 计算费率
         double pickupRate = pickupRegion.map(DeliveryRegion::getRateMultiplier)
                 .orElse(1.0);
         double deliveryRate = deliveryRegion.map(DeliveryRegion::getRateMultiplier)

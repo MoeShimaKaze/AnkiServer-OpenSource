@@ -53,8 +53,7 @@ public class OrderTimeoutChecker {
 
     /**
      * 定时检查订单超时情况
-     * 修改：使用独立事务处理每个订单，避免一个订单失败影响其他订单
-     * 增加检查避免处理已归档订单
+     * 修改：使用独立事务处理每个订单，加强错误处理，避免重复处理已归档订单
      */
     @Scheduled(fixedRateString = "${mailorder.check-interval}")
     public void checkOrderTimeouts() {
@@ -67,30 +66,36 @@ public class OrderTimeoutChecker {
         logger.debug("正在检查 {} 个活跃订单", activeOrders.size());
 
         TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
-        // 设置事务传播行为为REQUIRES_NEW，确保每个订单都在独立事务中处理
+        // 设置事务传播行为为REQUIRES_NEW，避免事务冲突
         transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        // 设置隔离级别为READ_COMMITTED，减少锁定
+        transactionTemplate.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
 
         int processedCount = 0;
         int successCount = 0;
         int failureCount = 0;
+        int skippedCount = 0;
 
         for (MailOrder order : activeOrders) {
             try {
-                // 检查订单是否已归档，如果已归档则跳过处理
+                // 首先检查订单是否已归档，如果已归档则跳过处理
                 if (isOrderArchived(order.getOrderNumber())) {
                     logger.debug("订单 {} 已归档，跳过处理", order.getOrderNumber());
+                    skippedCount++;
                     continue;
                 }
 
-                // 再次检查订单状态，防止在获取列表和处理之间状态已改变
+                // 再次查询确认订单状态
                 MailOrder freshOrder = mailOrderRepository.findById(order.getId()).orElse(null);
                 if (freshOrder == null ||
                         freshOrder.getOrderStatus() == OrderStatus.COMPLETED ||
                         freshOrder.getOrderStatus() == OrderStatus.CANCELLED) {
                     logger.debug("订单 {} 已完成或取消，跳过处理", order.getOrderNumber());
+                    skippedCount++;
                     continue;
                 }
 
+                // 使用独立事务处理每个订单
                 Boolean result = transactionTemplate.execute(status -> {
                     try {
                         TimeoutResults.TimeoutCheckResult checkResult;
@@ -105,6 +110,7 @@ public class OrderTimeoutChecker {
                         }
                         return true;
                     } catch (Exception e) {
+                        // 显式设置回滚
                         status.setRollbackOnly();
                         logger.error("处理订单 {} 超时检查时发生错误: {}",
                                 freshOrder.getOrderNumber(), e.getMessage(), e);
@@ -126,17 +132,25 @@ public class OrderTimeoutChecker {
             processedCount++;
         }
 
-        logger.info("定时订单超时检查完成，共处理 {} 个订单，成功 {}，失败 {}",
-                processedCount, successCount, failureCount);
+        logger.info("定时订单超时检查完成，共处理 {} 个订单，成功 {}，失败 {}，跳过 {}",
+                processedCount, successCount, failureCount, skippedCount);
     }
 
     /**
      * 检查订单是否已归档
+     * @param orderNumber 订单编号
+     * @return 如果订单已归档则返回true，否则返回false
      */
     private boolean isOrderArchived(UUID orderNumber) {
-        // 查询废弃订单表，检查订单是否已归档
-        List<AbandonedOrder> existingOrders = abandonedOrderRepository.findByOrderNumber(orderNumber);
-        return !existingOrders.isEmpty();
+        try {
+            // 查询废弃订单表，检查订单是否已归档
+            List<AbandonedOrder> existingOrders = abandonedOrderRepository.findByOrderNumber(orderNumber);
+            return !existingOrders.isEmpty();
+        } catch (Exception e) {
+            logger.warn("检查订单 {} 归档状态时发生错误: {}", orderNumber, e.getMessage());
+            // 发生错误时假设订单未归档，以便后续检查
+            return false;
+        }
     }
 
     /**
