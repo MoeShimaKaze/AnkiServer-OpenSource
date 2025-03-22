@@ -17,6 +17,7 @@ import com.server.anki.timeout.core.Timeoutable;
 import com.server.anki.timeout.entity.TimeoutResults;
 import com.server.anki.timeout.enums.TimeoutStatus;
 import com.server.anki.timeout.enums.TimeoutType;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -68,9 +69,11 @@ public class GlobalTimeoutService {
     @Autowired
     private AbandonedOrderRepository abandonedOrderRepository;
 
+    @Autowired
+    private OrderLockService orderLockService;
+
     /**
      * 定时检查所有类型订单的超时情况
-     * 修改：使用TransactionTemplate为每个订单创建独立事务，避免相互影响，增强归档状态检查
      */
     @Scheduled(fixedRateString = "${timeout.check-interval:60000}")
     public void checkAllOrderTimeouts() {
@@ -91,16 +94,11 @@ public class GlobalTimeoutService {
         activeOrders.sort((o1, o2) ->
                 o2.getTimeoutOrderType().getPriority() - o1.getTimeoutOrderType().getPriority());
 
-        TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
-        // 设置事务传播行为为REQUIRES_NEW，确保每个订单都在独立事务中处理
-        transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
-        // 设置事务隔离级别为READ_COMMITTED，减少锁争用
-        transactionTemplate.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
-
         int processedCount = 0;
         int successCount = 0;
         int failureCount = 0;
         int skippedCount = 0;
+        int lockedCount = 0;
 
         for (Timeoutable order : activeOrders) {
             try {
@@ -111,38 +109,32 @@ public class GlobalTimeoutService {
                     continue;
                 }
 
-                // 使用不同的事务处理方式，直接处理结果而不是通过返回值
-                try {
-                    transactionTemplate.execute(status -> {
-                        try {
-                            // 在事务内再次检查归档状态，避免并发问题
-                            if (isOrderArchived(order.getOrderNumber())) {
-                                logger.debug("事务内检测到订单 {} 已归档，跳过处理", order.getOrderNumber());
-                                return null;
-                            }
+                // 尝试获取订单锁，如果失败则跳过该订单
+                if (!orderLockService.tryLock(order.getOrderNumber())) {
+                    logger.debug("订单 {} 已被其他线程锁定，跳过处理", order.getOrderNumber());
+                    lockedCount++;
+                    continue;
+                }
 
-                            TimeoutResults.TimeoutCheckResult checkResult = checkOrderTimeout(order, now);
-                            if (checkResult.status() != TimeoutStatus.NORMAL) {
-                                timeoutHandler.handleTimeoutResult(order, checkResult);
-                            }
-                            return null;  // 正常完成
-                        } catch (Exception e) {
-                            // 捕获异常并记录，但不再标记事务回滚
-                            logger.error("处理订单 {} 超时检查时发生错误: {}",
-                                    order.getOrderNumber(), e.getMessage(), e);
-                            // 只有在发生严重错误时才回滚
-                            if (isCriticalException(e)) {
-                                status.setRollbackOnly();
-                            }
-                            return null;  // 返回null表示处理完成
-                        }
-                    });
-                    successCount++;  // 事务正常完成，视为成功
-                } catch (Exception e) {
-                    // 事务本身抛出异常
-                    failureCount++;
-                    logger.error("处理订单 {} 时事务执行失败: {}",
-                            order.getOrderNumber(), e.getMessage(), e);
+                try {
+                    // 获取锁后再次检查订单是否已归档
+                    if (isOrderArchived(order.getOrderNumber())) {
+                        logger.debug("获取锁后发现订单 {} 已归档，跳过处理", order.getOrderNumber());
+                        skippedCount++;
+                        continue;
+                    }
+
+                    // 为每个订单创建新的事务模板，确保完全独立的事务
+                    Boolean result = getResult(order, now);
+
+                    if (Boolean.TRUE.equals(result)) {
+                        successCount++;
+                    } else {
+                        failureCount++;
+                    }
+                } finally {
+                    // 无论处理结果如何，都释放锁
+                    orderLockService.unlock(order.getOrderNumber());
                 }
 
                 processedCount++;
@@ -156,12 +148,66 @@ public class GlobalTimeoutService {
                 failureCount++;
                 logger.error("处理订单 {} 过程中发生未预期错误: {}",
                         order.getOrderNumber(), e.getMessage(), e);
+                // 确保异常情况下也释放锁
+                try {
+                    if (orderLockService.isLockedByCurrentThread(order.getOrderNumber())) {
+                        orderLockService.unlock(order.getOrderNumber());
+                    }
+                } catch (Exception ex) {
+                    logger.error("尝试释放订单 {} 锁时发生错误: {}",
+                            order.getOrderNumber(), ex.getMessage());
+                }
             }
         }
 
         long duration = System.currentTimeMillis() - startTime;
-        logger.info("全局超时检查任务完成，共处理 {} 个订单，成功 {}，失败 {}，跳过 {}，耗时 {} 毫秒",
-                activeOrders.size(), successCount, failureCount, skippedCount, duration);
+        logger.info("全局超时检查任务完成: 处理 {} 个订单, 成功 {}, 失败 {}, 跳过 {}, 锁定 {}, 耗时 {} 毫秒",
+                activeOrders.size(), successCount, failureCount, skippedCount, lockedCount, duration);
+    }
+
+    @Nullable
+    private Boolean getResult(Timeoutable order, LocalDateTime now) {
+        TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+        transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        transactionTemplate.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+
+        // 处理订单
+        // 正常完成，返回true
+        // 捕获异常并记录
+        // 对于GIS数据错误，不回滚事务
+        // 继续处理，不标记回滚
+        // 检查是否为关键异常，如果是则标记回滚
+        // 处理失败，返回false
+        return transactionTemplate.execute(status -> {
+            try {
+                TimeoutResults.TimeoutCheckResult checkResult = checkOrderTimeout(order, now);
+                if (checkResult.status() != TimeoutStatus.NORMAL) {
+                    timeoutHandler.handleTimeoutResult(order, checkResult);
+                }
+                return true; // 正常完成，返回true
+            } catch (Exception e) {
+                // 捕获异常并记录
+                logger.error("处理订单 {} 超时检查时发生错误: {}",
+                        order.getOrderNumber(), e.getMessage(), e);
+
+                // 对于GIS数据错误，不回滚事务
+                if (e.getMessage() != null &&
+                        (e.getMessage().contains("GIS data") ||
+                                e.getMessage().contains("st_geomfromtext"))) {
+                    logger.warn("GIS数据错误，但不影响订单处理: {}", e.getMessage());
+                    return true; // 继续处理，不标记回滚
+                }
+
+                // 检查是否为关键异常，如果是则标记回滚
+                if (e instanceof DataIntegrityViolationException ||
+                        e instanceof OptimisticLockingFailureException ||
+                        e instanceof PessimisticLockingFailureException) {
+                    status.setRollbackOnly();
+                }
+
+                return false; // 处理失败，返回false
+            }
+        });
     }
 
     /**
@@ -192,7 +238,7 @@ public class GlobalTimeoutService {
 
     /**
      * 检查单个订单的超时情况
-     * 修改：统一检查逻辑，不再区分订单类型
+     * 修改：使用统一的超时检查逻辑
      */
     private TimeoutResults.TimeoutCheckResult checkOrderTimeout(Timeoutable order, LocalDateTime now) {
         // 检查订单是否已归档
@@ -202,7 +248,7 @@ public class GlobalTimeoutService {
 
         TimeoutOrderType orderType = order.getTimeoutOrderType();
 
-        // 对于不同类型的订单，使用不同的检查逻辑，但快递代拿订单只使用一个统一的检查逻辑
+        // 对于不同类型的订单，使用不同的检查逻辑
         return switch (orderType) {
             case MAIL_ORDER -> checkMailOrderTimeout((MailOrder) order, now);
             case SHOPPING_ORDER -> checkShoppingOrderTimeout(order, now);

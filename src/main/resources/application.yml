@@ -173,6 +173,12 @@ jwt:
   access-token-expiration: 300000  # 5分钟，单位是毫秒
   refresh-token-expiration: 86400000  # 24小时，单位是毫秒
 
+# 订单锁配置
+order:
+  lock:
+    wait-time: 1000    # 等待获取锁的最长时间(毫秒)
+    lease-time: 10000  # 锁的租约时间(毫秒)
+
 #MailOrder 配置
 mailorder:
   business-hours:
