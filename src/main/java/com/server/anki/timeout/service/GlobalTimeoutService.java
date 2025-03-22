@@ -192,126 +192,114 @@ public class GlobalTimeoutService {
 
     /**
      * 检查单个订单的超时情况
-     * 修改：增加归档状态检查
+     * 修改：统一检查逻辑，不再区分订单类型
      */
     private TimeoutResults.TimeoutCheckResult checkOrderTimeout(Timeoutable order, LocalDateTime now) {
-        // 增加额外的归档检查
+        // 检查订单是否已归档
         if (isOrderArchived(order.getOrderNumber())) {
             return new TimeoutResults.TimeoutCheckResult(TimeoutStatus.NORMAL, null, 0);
         }
 
         TimeoutOrderType orderType = order.getTimeoutOrderType();
-        OrderStatus status = order.getOrderStatus();
 
-        // 对于不同类型的订单，使用不同的检查逻辑
+        // 对于不同类型的订单，使用不同的检查逻辑，但快递代拿订单只使用一个统一的检查逻辑
         return switch (orderType) {
-            case MAIL_ORDER -> {
-                MailOrder mailOrder = (MailOrder) order;
-                if (mailOrder.getDeliveryService() == DeliveryService.STANDARD) {
-                    yield checkStandardOrderTimeout(mailOrder, now);
-                } else {
-                    yield checkExpressOrderTimeout(mailOrder, now);
-                }
-            }
+            case MAIL_ORDER -> checkMailOrderTimeout((MailOrder) order, now);
             case SHOPPING_ORDER -> checkShoppingOrderTimeout(order, now);
             case PURCHASE_REQUEST -> checkPurchaseRequestTimeout(order, now);
         };
     }
 
     /**
-     * 检查标准快递订单的超时情况
-     * 从OrderTimeoutChecker迁移过来的逻辑
+     * 统一的快递代拿订单超时检查
+     * 同时支持 STANDARD 和 EXPRESS 配送方式
      */
-    private TimeoutResults.TimeoutCheckResult checkStandardOrderTimeout(MailOrder order, LocalDateTime now) {
+    private TimeoutResults.TimeoutCheckResult checkMailOrderTimeout(MailOrder order, LocalDateTime now) {
         // 若尚未被接单，则不做超时检查
         if (order.getAssignedUser() == null) {
             return new TimeoutResults.TimeoutCheckResult(TimeoutStatus.NORMAL, null, 0);
         }
 
-        // 当订单状态为 PENDING 时，认为处于取件阶段
-        if (order.getOrderStatus() == OrderStatus.PENDING) {
-            Duration elapsedTime = Duration.between(order.getCreatedAt(), now);
-            int pickupTimeoutMinutes = mailOrderConfig.getServiceConfig(DeliveryService.STANDARD).getPickupTimeout();
-            int elapsedMinutes = (int) elapsedTime.toMinutes();
-
-            logger.debug("检查STANDARD订单取件超时: 订单号: {}, 已经过时间: {} 分钟, 阈值: {} 分钟",
-                    order.getOrderNumber(), elapsedMinutes, pickupTimeoutMinutes);
-
-            if (elapsedMinutes >= pickupTimeoutMinutes) {
-                return new TimeoutResults.TimeoutCheckResult(
-                        TimeoutStatus.PICKUP_TIMEOUT,
-                        TimeoutType.PICKUP,
-                        elapsedMinutes - pickupTimeoutMinutes);
-            }
-        } else if (order.getOrderStatus() == OrderStatus.IN_TRANSIT) {
-            // 配送阶段：允许延长1小时，超出部分视为配送超时
-            LocalDateTime allowedDeliveryTime = order.getDeliveryTime().plusHours(1);
-            Duration overtime = Duration.between(allowedDeliveryTime, now);
-            int overtimeMinutes = (int) overtime.toMinutes();
-
-            logger.debug("检查STANDARD订单配送超时: 订单号: {}, 当前时间: {}, 允许截止时间: {}",
-                    order.getOrderNumber(), now, allowedDeliveryTime);
-
-            if (overtimeMinutes > 0) {
-                return new TimeoutResults.TimeoutCheckResult(
-                        TimeoutStatus.DELIVERY_TIMEOUT,
-                        TimeoutType.DELIVERY,
-                        overtimeMinutes);
-            }
-        }
-
-        return new TimeoutResults.TimeoutCheckResult(TimeoutStatus.NORMAL, null, 0);
-    }
-
-    /**
-     * 检查快递订单的超时情况
-     * 从OrderTimeoutChecker迁移过来的逻辑
-     */
-    private TimeoutResults.TimeoutCheckResult checkExpressOrderTimeout(MailOrder order, LocalDateTime now) {
-        // 若尚未被接单，则不做超时检查
-        if (order.getAssignedUser() == null) {
-            return new TimeoutResults.TimeoutCheckResult(TimeoutStatus.NORMAL, null, 0);
-        }
-
+        OrderStatus status = order.getOrderStatus();
         Duration elapsedTime;
         FeeTimeoutType timeoutType;
         int timeoutMinutes;
 
-        OrderStatus status = order.getOrderStatus();
-
+        // 根据订单状态和配送方式确定超时检查逻辑
         if (status == OrderStatus.PENDING || status == OrderStatus.ASSIGNED) {
             // 取件阶段
             elapsedTime = Duration.between(order.getCreatedAt(), now);
-            timeoutMinutes = (int) timeoutFeeCalculator.getTimeoutMinutes(order, FeeTimeoutType.PICKUP);
             timeoutType = FeeTimeoutType.PICKUP;
 
-            logger.debug("检查EXPRESS订单取件超时: 订单号: {}, 已经过时间: {} 分钟, 限制时间: {} 分钟",
-                    order.getOrderNumber(), elapsedTime.toMinutes(), timeoutMinutes);
+            // 根据配送方式获取不同的超时阈值
+            if (order.getDeliveryService() == DeliveryService.STANDARD) {
+                timeoutMinutes = mailOrderConfig.getServiceConfig(DeliveryService.STANDARD).getPickupTimeout();
+            } else {
+                timeoutMinutes = (int) timeoutFeeCalculator.getTimeoutMinutes(order, timeoutType);
+            }
+
+            logger.debug("检查{}订单取件超时: 订单号: {}, 已经过时间: {} 分钟, 限制时间: {} 分钟",
+                    order.getDeliveryService(), order.getOrderNumber(),
+                    elapsedTime.toMinutes(), timeoutMinutes);
         } else if (status == OrderStatus.IN_TRANSIT) {
             // 配送阶段
-            elapsedTime = Duration.between(order.getDeliveryTime(), now);
-            timeoutMinutes = (int) timeoutFeeCalculator.getTimeoutMinutes(order, FeeTimeoutType.DELIVERY);
             timeoutType = FeeTimeoutType.DELIVERY;
 
-            logger.debug("检查EXPRESS订单配送超时: 订单号: {}, 当前时间: {}, 预计送达时间: {}, 已经过时间: {} 分钟",
-                    order.getOrderNumber(), now, order.getDeliveryTime(), elapsedTime.toMinutes());
+            if (order.getDeliveryService() == DeliveryService.STANDARD) {
+                // 标准配送：允许延长1小时
+                LocalDateTime allowedDeliveryTime = order.getDeliveryTime().plusHours(1);
+                elapsedTime = Duration.between(allowedDeliveryTime, now);
+                timeoutMinutes = 0; // 直接用elapsed > 0判断是否超时
+
+                logger.debug("检查STANDARD订单配送超时: 订单号: {}, 当前时间: {}, 允许截止时间: {}",
+                        order.getOrderNumber(), now, allowedDeliveryTime);
+            } else {
+                // EXPRESS配送：使用计算器确定超时时间
+                elapsedTime = Duration.between(order.getDeliveryTime(), now);
+                timeoutMinutes = (int) timeoutFeeCalculator.getTimeoutMinutes(order, timeoutType);
+
+                logger.debug("检查EXPRESS订单配送超时: 订单号: {}, 当前时间: {}, 预计送达时间: {}, 已经过时间: {} 分钟",
+                        order.getOrderNumber(), now, order.getDeliveryTime(), elapsedTime.toMinutes());
+            }
         } else if (status == OrderStatus.DELIVERED) {
             // 确认阶段
             if (order.getDeliveredDate() == null) {
                 return new TimeoutResults.TimeoutCheckResult(TimeoutStatus.NORMAL, null, 0);
             }
+
             elapsedTime = Duration.between(order.getDeliveredDate(), now);
-            timeoutMinutes = (int) timeoutFeeCalculator.getTimeoutMinutes(order, FeeTimeoutType.CONFIRMATION);
             timeoutType = FeeTimeoutType.CONFIRMATION;
 
-            logger.debug("检查EXPRESS订单确认超时: 订单号: {}, 已送达时间: {}, 已经过时间: {} 分钟",
-                    order.getOrderNumber(), order.getDeliveredDate(), elapsedTime.toMinutes());
+            // 确认阶段超时时间对所有配送方式都一样
+            timeoutMinutes = (int) timeoutFeeCalculator.getTimeoutMinutes(order, timeoutType);
+
+            logger.debug("检查{}订单确认超时: 订单号: {}, 已送达时间: {}, 已经过时间: {} 分钟",
+                    order.getDeliveryService(), order.getOrderNumber(),
+                    order.getDeliveredDate(), elapsedTime.toMinutes());
         } else {
             // 其他状态不做超时检查
             return new TimeoutResults.TimeoutCheckResult(TimeoutStatus.NORMAL, null, 0);
         }
 
         int elapsedMinutes = (int) elapsedTime.toMinutes();
+
+        // STANDARD配送在配送阶段使用特殊判断
+        if (order.getDeliveryService() == DeliveryService.STANDARD &&
+                status == OrderStatus.IN_TRANSIT) {
+            // 超出允许的配送时间，标记为超时
+            if (elapsedMinutes > 0) {
+                TimeoutType oldTimeoutType = convertToOldTimeoutType(timeoutType);
+                return new TimeoutResults.TimeoutCheckResult(
+                        getTimeoutStatus(oldTimeoutType, true),
+                        oldTimeoutType,
+                        elapsedMinutes
+                );
+            }
+            // 否则视为正常
+            return new TimeoutResults.TimeoutCheckResult(TimeoutStatus.NORMAL, null, 0);
+        }
+
+        // 所有其他情况使用统一的逻辑
         double timeoutPercentage = (double) elapsedMinutes / timeoutMinutes;
 
         // 获取全局配置的警告阈值（默认80%）
@@ -381,37 +369,6 @@ public class GlobalTimeoutService {
             case DELIVERY -> TimeoutType.DELIVERY;
             case CONFIRMATION -> TimeoutType.CONFIRMATION;
         };
-    }
-
-    /**
-     * 手动触发特定订单的超时检查
-     */
-    public TimeoutResults.TimeoutCheckResult manualCheckTimeout(Timeoutable order) {
-        TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
-
-        try {
-            return transactionTemplate.execute(status -> {
-                try {
-                    LocalDateTime now = LocalDateTime.now();
-                    TimeoutResults.TimeoutCheckResult result = checkOrderTimeout(order, now);
-
-                    if (result.status() != TimeoutStatus.NORMAL) {
-                        timeoutHandler.handleTimeoutResult(order, result);
-                    }
-
-                    return result;
-                } catch (Exception e) {
-                    status.setRollbackOnly();
-                    logger.error("手动处理订单 {} 超时检查时发生错误: {}",
-                            order.getOrderNumber(), e.getMessage(), e);
-                    throw e;
-                }
-            });
-        } catch (Exception e) {
-            logger.error("手动处理订单 {} 时事务执行失败: {}",
-                    order.getOrderNumber(), e.getMessage(), e);
-            throw e;
-        }
     }
 
     /**
