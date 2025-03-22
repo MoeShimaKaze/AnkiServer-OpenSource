@@ -84,21 +84,21 @@ public class GlobalTimeoutHandler {
     @Autowired
     private OrderLockService orderLockService;
 
-    /**
-     * 处理超时检查结果
-     * 修改：使用分布式锁避免并发冲突
-     */
     public void handleTimeoutResult(Timeoutable order, TimeoutResults.TimeoutCheckResult result) {
         if (result.status() == TimeoutStatus.NORMAL) {
             return;
         }
 
-        // 如果该方法在全局检查中被调用，那么锁已经被获取，无需再次获取锁
+        // 先检查订单是否已归档
+        if (isOrderArchived(order.getOrderNumber())) {
+            logger.info("订单 {} 已归档，跳过超时处理", order.getOrderNumber());
+            return;
+        }
+
         boolean externallyLocked = orderLockService.isLockedByCurrentThread(order.getOrderNumber());
         boolean locallyLocked = false;
 
         try {
-            // 如果锁未被当前线程持有，尝试获取锁
             if (!externallyLocked) {
                 locallyLocked = orderLockService.tryLock(order.getOrderNumber());
                 if (!locallyLocked) {
@@ -106,49 +106,73 @@ public class GlobalTimeoutHandler {
                     return;
                 }
 
-                // 获取锁后再次检查订单是否已归档
+                // 获取锁后再次检查订单是否已归档（双重检查）
                 if (isOrderArchived(order.getOrderNumber())) {
-                    logger.info("订单 {} 已归档，跳过超时处理", order.getOrderNumber());
+                    logger.info("获取锁后发现订单 {} 已归档，跳过超时处理", order.getOrderNumber());
                     return;
                 }
             }
 
-            try {
-                // 直接调用方法而不赋值给变量
-                switch (result.status()) {
-                    case PICKUP_TIMEOUT -> handlePickupTimeout(order);
-                    case DELIVERY_TIMEOUT -> handleDeliveryTimeout(order);
-                    case CONFIRMATION_TIMEOUT -> handleConfirmationTimeout(order);
-                    case PICKUP_TIMEOUT_WARNING, DELIVERY_TIMEOUT_WARNING, CONFIRMATION_TIMEOUT_WARNING ->
-                            handleTimeoutWarning(order, result.status(), result.type());
-                    default -> logger.debug("当前状态无需处理: {}", result.status());
-                }
+            // 单独方法处理超时逻辑，便于管理事务边界
+            handleTimeoutWithLockAcquired(order, result);
 
-                // 即使处理不完全成功，也发送超时事件以更新统计
-                if (result.isTimeout()) {
-                    Long userId = order.getAssignedUser() != null ? order.getAssignedUser().getId() : null;
-                    String timeoutTypeStr = result.type() != null ? result.type().name() : "UNKNOWN";
-
-                    // 发布事件用于统计和分析
-                    try {
-                        TimeoutEvent timeoutEvent = new TimeoutEvent(order, timeoutTypeStr, userId);
-                        eventPublisher.publishEvent(timeoutEvent);
-                        logger.info("发送超时事件，类型: {}, 用户ID: {}", timeoutTypeStr, userId);
-                    } catch (Exception e) {
-                        logger.warn("发布超时事件时发生错误，但不影响主流程: {}", e.getMessage());
-                    }
-                }
-            } catch (Exception e) {
-                // 捕获所有异常，但不再向上抛出
-                logger.error("处理订单 {} 的超时状态时发生错误: {}",
-                        order.getOrderNumber(), e.getMessage(), e);
-                // 不抛出异常，避免事务回滚
-            }
         } finally {
-            // 只有当锁是在本方法内获取的才释放
             if (locallyLocked) {
                 orderLockService.unlock(order.getOrderNumber());
             }
+        }
+    }
+
+    // 新增方法：在获取锁后处理超时逻辑
+    private void handleTimeoutWithLockAcquired(Timeoutable order, TimeoutResults.TimeoutCheckResult result) {
+        try {
+            // 再次检查订单状态
+            if (isOrderArchived(order.getOrderNumber())) {
+                logger.info("处理前再次检查：订单 {} 已归档，跳过超时处理", order.getOrderNumber());
+                return;
+            }
+
+            // 根据状态处理不同类型的超时
+            switch (result.status()) {
+                case PICKUP_TIMEOUT -> {
+                    boolean success = handlePickupTimeout(order);
+                    logger.info("处理订单 {} 取件超时 {}",
+                            order.getOrderNumber(), success ? "成功" : "失败");
+                }
+                case DELIVERY_TIMEOUT -> {
+                    handleDeliveryTimeout(order);
+                    logger.info("处理订单 {} 配送超时", order.getOrderNumber());
+                }
+                case CONFIRMATION_TIMEOUT -> {
+                    handleConfirmationTimeout(order);
+                    logger.info("处理订单 {} 确认超时", order.getOrderNumber());
+                }
+                case PICKUP_TIMEOUT_WARNING, DELIVERY_TIMEOUT_WARNING, CONFIRMATION_TIMEOUT_WARNING -> {
+                    handleTimeoutWarning(order, result.status(), result.type());
+                    logger.info("处理订单 {} 超时警告 {}", order.getOrderNumber(), result.status());
+                }
+                default -> logger.debug("当前状态 {} 无需处理", result.status());
+            }
+
+            // 所有处理完成后，才发送超时事件
+            if (result.isTimeout()) {
+                // 将事件发布单独提取，方便控制异常
+                try {
+                    Long userId = order.getAssignedUser() != null ? order.getAssignedUser().getId() : null;
+                    String timeoutTypeStr = result.type() != null ? result.type().name() : "UNKNOWN";
+
+                    TimeoutEvent timeoutEvent = new TimeoutEvent(order, timeoutTypeStr, userId);
+                    eventPublisher.publishEvent(timeoutEvent);
+                    logger.info("发送超时事件，类型: {}, 用户ID: {}", timeoutTypeStr, userId);
+                } catch (Exception e) {
+                    logger.warn("发布超时事件时发生错误，但不影响主流程: {}", e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            // 捕获处理过程中的所有异常
+            logger.error("处理订单 {} 超时状态时发生错误: {}",
+                    order.getOrderNumber(), e.getMessage(), e);
+            // 不再抛出异常
         }
     }
 
