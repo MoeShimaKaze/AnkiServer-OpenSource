@@ -265,48 +265,65 @@ public class TimeoutStatisticsDataGenerator {
      */
     private List<Product> generateProducts(int count, List<Store> stores) {
         List<Product> products = new ArrayList<>();
+
+        // 生成唯一标识符，使用时间戳来确保唯一性
+        long timestamp = System.currentTimeMillis();
+
         for (int i = 0; i < count; i++) {
-            Store store = stores.get(i % stores.size());
+            try {
+                Store store = stores.get(i % stores.size());
 
-            Product product = new Product();
-            product.setStore(store);
-            product.setName(generateRandomProductName());
-            product.setDescription("这是一个高质量的商品，编号：" + (i + 1));
+                Product product = new Product();
+                product.setStore(store);
+                product.setName(generateRandomProductName());
+                product.setDescription("这是一个高质量的商品，编号：" + (i + 1));
 
-            // 设置价格
-            double basePrice = 10 + random.nextInt(990); // 10-999元
-            product.setPrice(BigDecimal.valueOf(basePrice).setScale(2, RoundingMode.HALF_UP));
-            product.setMarketPrice(BigDecimal.valueOf(basePrice * 1.2).setScale(2, RoundingMode.HALF_UP));
-            product.setCostPrice(BigDecimal.valueOf(basePrice * 0.7).setScale(2, RoundingMode.HALF_UP));
+                // 设置价格
+                double basePrice = 10 + random.nextInt(990); // 10-999元
+                product.setPrice(BigDecimal.valueOf(basePrice).setScale(2, RoundingMode.HALF_UP));
+                product.setMarketPrice(BigDecimal.valueOf(basePrice * 1.2).setScale(2, RoundingMode.HALF_UP));
+                product.setCostPrice(BigDecimal.valueOf(basePrice * 0.7).setScale(2, RoundingMode.HALF_UP));
 
-            // 设置库存和其他信息
-            product.setStock(10 + random.nextInt(91)); // 10-100
-            product.setWeight(0.1 + random.nextDouble() * 9.9); // 0.1-10.0kg
+                // 设置库存和其他信息
+                product.setStock(10 + random.nextInt(91)); // 10-100
+                product.setWeight(0.1 + random.nextDouble() * 9.9); // 0.1-10.0kg
 
-            // 设置尺寸
-            if (random.nextBoolean()) {
-                product.setLength(5.0 + random.nextDouble() * 45.0); // 5-50cm
-                product.setWidth(5.0 + random.nextDouble() * 45.0);  // 5-50cm
-                product.setHeight(2.0 + random.nextDouble() * 28.0); // 2-30cm
+                // 设置尺寸
+                if (random.nextBoolean()) {
+                    product.setLength(5.0 + random.nextDouble() * 45.0); // 5-50cm
+                    product.setWidth(5.0 + random.nextDouble() * 45.0);  // 5-50cm
+                    product.setHeight(2.0 + random.nextDouble() * 28.0); // 2-30cm
+                }
+
+                product.setStatus(ProductStatus.ON_SALE);
+                product.setCategory(getRandomProductCategory());
+                product.setImageUrl("product_image_" + (i + 1) + ".jpg");
+
+                // 修改SKU生成逻辑，使用时间戳和随机数确保唯一性
+                String uniqueSku = "SKU" + timestamp + "_" + i + "_" + random.nextInt(1000);
+                product.setSkuCode(uniqueSku);
+
+                // 同样修改条形码生成逻辑
+                product.setBarcode("BAR" + timestamp + "_" + (1000000 + i));
+
+                // 设置特殊属性
+                product.setIsLargeItem(random.nextInt(10) == 0); // 10%的概率是大件
+                product.setNeedsPackaging(random.nextBoolean());
+                product.setIsFragile(random.nextInt(5) == 0); // 20%的概率是易碎品
+
+                // 销售统计
+                product.setSalesCount(random.nextInt(1000));
+                product.setViewCount(product.getSalesCount() * (2 + random.nextInt(8))); // 浏览量是销量的2-10倍
+                product.setRating(3.0 + random.nextDouble() * 2.0); // 3.0-5.0
+
+                products.add(productRepository.save(product));
+                logger.debug("成功创建商品: {}, SKU: {}", product.getName(), product.getSkuCode());
+
+            } catch (Exception e) {
+                // 添加单个商品失败时的异常处理，避免整批数据生成失败
+                logger.warn("创建第{}个商品时出现异常: {}", i, e.getMessage());
+                // 继续循环创建下一个商品
             }
-
-            product.setStatus(ProductStatus.ON_SALE);
-            product.setCategory(getRandomProductCategory());
-            product.setImageUrl("product_image_" + (i + 1) + ".jpg");
-            product.setSkuCode("SKU" + (10000 + i));
-            product.setBarcode("BAR" + (1000000 + i));
-
-            // 设置特殊属性
-            product.setIsLargeItem(random.nextInt(10) == 0); // 10%的概率是大件
-            product.setNeedsPackaging(random.nextBoolean());
-            product.setIsFragile(random.nextInt(5) == 0); // 20%的概率是易碎品
-
-            // 销售统计
-            product.setSalesCount(random.nextInt(1000));
-            product.setViewCount(product.getSalesCount() * (2 + random.nextInt(8))); // 浏览量是销量的2-10倍
-            product.setRating(3.0 + random.nextDouble() * 2.0); // 3.0-5.0
-
-            products.add(productRepository.save(product));
         }
         return products;
     }
