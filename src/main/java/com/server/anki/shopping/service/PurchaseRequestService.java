@@ -614,9 +614,9 @@ public class PurchaseRequestService {
     }
 
     /**
-         * 推荐得分包装类
-         */
-        private record RecommendationScore(PurchaseRequest request, double score, double distance) {
+     * 推荐得分包装类
+     */
+    private record RecommendationScore(PurchaseRequest request, double score, double distance) {
     }
     /**
      * 计算请求的所有费用
@@ -689,24 +689,47 @@ public class PurchaseRequestService {
 
         // 验证状态流转的合法性
         switch (currentStatus) {
+            case PAYMENT_PENDING:
+                if (newStatus != OrderStatus.PENDING && newStatus != OrderStatus.CANCELLED
+                        && newStatus != OrderStatus.PAYMENT_TIMEOUT) {
+                    throw new InvalidOperationException("支付待处理状态只能变更为待处理、已取消或支付超时");
+                }
+                break;
             case PENDING:
-                if (newStatus != OrderStatus.ASSIGNED && newStatus != OrderStatus.CANCELLED) {
-                    throw new InvalidOperationException("待处理状态只能变更为已接单或已取消");
+                if (newStatus != OrderStatus.ASSIGNED && newStatus != OrderStatus.CANCELLED
+                        && newStatus != OrderStatus.PLATFORM_INTERVENTION) {
+                    throw new InvalidOperationException("待处理状态只能变更为已接单、已取消或平台介入");
                 }
                 break;
             case ASSIGNED:
-                if (newStatus != OrderStatus.IN_TRANSIT && newStatus != OrderStatus.CANCELLED) {
-                    throw new InvalidOperationException("已接单状态只能变更为配送中或已取消");
+                if (newStatus != OrderStatus.IN_TRANSIT && newStatus != OrderStatus.CANCELLED
+                        && newStatus != OrderStatus.PLATFORM_INTERVENTION) {
+                    throw new InvalidOperationException("已接单状态只能变更为配送中、已取消或平台介入");
                 }
                 break;
             case IN_TRANSIT:
-                if (newStatus != OrderStatus.DELIVERED && newStatus != OrderStatus.CANCELLED) {
-                    throw new InvalidOperationException("配送中状态只能变更为已送达或已取消");
+                if (newStatus != OrderStatus.DELIVERED && newStatus != OrderStatus.CANCELLED
+                        && newStatus != OrderStatus.PLATFORM_INTERVENTION) {
+                    throw new InvalidOperationException("配送中状态只能变更为已送达、已取消或平台介入");
                 }
                 break;
             case DELIVERED:
-                if (newStatus != OrderStatus.COMPLETED) {
-                    throw new InvalidOperationException("已送达状态只能变更为已完成");
+                if (newStatus != OrderStatus.COMPLETED && newStatus != OrderStatus.PLATFORM_INTERVENTION) {
+                    throw new InvalidOperationException("已送达状态只能变更为已完成或平台介入");
+                }
+                break;
+            case PLATFORM_INTERVENTION:
+                // 平台介入状态可以转变为多种状态，根据处理结果决定
+                if (!Arrays.asList(OrderStatus.PENDING, OrderStatus.ASSIGNED,
+                        OrderStatus.IN_TRANSIT, OrderStatus.DELIVERED,
+                        OrderStatus.COMPLETED, OrderStatus.CANCELLED,
+                        OrderStatus.REFUNDING).contains(newStatus)) {
+                    throw new InvalidOperationException("平台介入状态只能变更为有效的后续处理状态");
+                }
+                break;
+            case MERCHANT_PENDING:
+                if (newStatus != OrderStatus.PENDING && newStatus != OrderStatus.CANCELLED) {
+                    throw new InvalidOperationException("商家待处理状态只能变更为待处理或已取消");
                 }
                 break;
             default:
