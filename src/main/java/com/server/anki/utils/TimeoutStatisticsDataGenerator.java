@@ -409,7 +409,7 @@ public class TimeoutStatisticsDataGenerator {
             user.setEmail("delivery" + (i + 1) + "@example.com");
             user.setEncryptedPassword("password123");
             user.setRegistrationDate(LocalDate.now().minusDays(random.nextInt(365)));
-            user.setUserGroup("delivery");
+            user.setUserGroup("messenger");
             user.setBirthday(LocalDate.now().minusYears(18 + random.nextInt(30)));
             user.setGender(random.nextBoolean() ? "男" : "女");
             user.setUserIdentity(UserIdentity.VERIFIED_USER);
