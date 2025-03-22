@@ -1,0 +1,119 @@
+name: Maven Build and Auto-Version
+
+on:
+  push:
+    branches: [ main ]  # 适用于主分支名称为 main 或 master
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
+      - '.github/workflows/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 需要写入权限来更新版本和创建标签
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取完整历史记录用于版本计算
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          server-id: github
+          settings-path: ${{ github.workspace }}
+
+      - name: Configure Git
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
+      - name: Extract current version
+        id: current_version
+        run: |
+          # 从 pom.xml 中提取当前版本
+          CURRENT_VERSION=$(grep -oP '<version>\K[^<]+(?=-SNAPSHOT</version>)' pom.xml | head -1)
+          echo "Current version from pom.xml: $CURRENT_VERSION"
+          echo "CURRENT_VERSION=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Calculate new version
+        id: version
+        run: |
+          # 获取当前版本
+          CURRENT_VERSION=${{ steps.current_version.outputs.CURRENT_VERSION }}
+          
+          # 解析版本组件
+          IFS='.' read -r -a VERSION_PARTS <<< "$CURRENT_VERSION"
+          MAJOR="${VERSION_PARTS[0]}"
+          MINOR="${VERSION_PARTS[1]}"
+          PATCH="${VERSION_PARTS[2]}"
+          
+          # 增加补丁版本
+          NEW_PATCH=$((PATCH + 1))
+          NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
+          
+          echo "New version will be: $NEW_VERSION"
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Update version in pom.xml
+        run: |
+          # 使用 Maven 版本插件更新 pom.xml 中的版本
+          mvn versions:set -DnewVersion=${{ steps.version.outputs.NEW_VERSION }}-SNAPSHOT -DgenerateBackupPoms=false
+
+      - name: Build with Maven
+        run: mvn -B package --file pom.xml
+
+      - name: Get JAR file name
+        id: jar_info
+        run: |
+          # 获取生成的 JAR 文件名
+          JAR_FILE=$(find target -name "*.jar" -not -name "*-sources.jar" -not -name "*-javadoc.jar" | head -n 1)
+          echo "Finding JAR file: $JAR_FILE"
+          JAR_NAME=$(basename "$JAR_FILE")
+          echo "JAR_FILE=$JAR_FILE" >> $GITHUB_OUTPUT
+          echo "JAR_NAME=$JAR_NAME" >> $GITHUB_OUTPUT
+
+      - name: Commit and tag new version
+        run: |
+          git add pom.xml
+          git commit -m "Bump version to ${{ steps.version.outputs.NEW_VERSION }}-SNAPSHOT [skip ci]"
+          git tag -a v${{ steps.version.outputs.NEW_VERSION }} -m "Release version ${{ steps.version.outputs.NEW_VERSION }}"
+          git push --tags
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.NEW_VERSION }}
+          name: Release v${{ steps.version.outputs.NEW_VERSION }}
+          body: |
+            # AnkiServer Release v${{ steps.version.outputs.NEW_VERSION }}
+            
+            自动构建发布于 ${{ github.event.repository.updated_at }}
+            
+            ## JAR 文件
+            - ${{ steps.jar_info.outputs.JAR_NAME }}
+            
+            ## 提交信息
+            ${{ github.event.head_commit.message }}
+          files: ${{ steps.jar_info.outputs.JAR_FILE }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload JAR as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnkiServer-${{ steps.version.outputs.NEW_VERSION }}
+          path: target/*.jar
+          retention-days: 14  # 设置保留期限为 14 天

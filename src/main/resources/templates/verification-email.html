@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="zh_cn">
+<head>
+    <meta charset="UTF-8">
+    <title>AnkiServer验证码</title>
+    <style>
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            color: #333333;
+        }
+        .header {
+            text-align: center;
+            padding: 20px 0;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+        }
+        .content {
+            padding: 20px 0;
+            line-height: 1.6;
+        }
+        .verification-code {
+            text-align: center;
+            font-size: 24px;
+            font-weight: bold;
+            color: #007bff;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            margin: 20px 0;
+            letter-spacing: 5px;
+        }
+        .footer {
+            text-align: center;
+            padding-top: 20px;
+            font-size: 12px;
+            color: #666666;
+            border-top: 1px solid #eeeeee;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h2>验证码</h2>
+    </div>
+    <div class="content">
+        <p>您好！</p>
+        <p>您的验证码如下：</p>
+        <div class="verification-code" th:text="${verificationCode}">
+            123456
+        </div>
+        <p>此验证码将在<span th:text="${expiryMinutes}">10</span>分钟后失效，请及时使用。</p>
+        <p>如果这不是您本人的操作，请忽略此邮件。</p>
+    </div>
+    <div class="footer">
+        <p>此邮件为系统自动发送，请勿回复</p>
+        <p>© <span th:text="${currentYear}">2024</span> All Rights Reserved</p>
+    </div>
+</div>
+</body>
+</html>

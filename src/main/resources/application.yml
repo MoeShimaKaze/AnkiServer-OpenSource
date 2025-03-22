@@ -1,0 +1,412 @@
+server:
+  port: 32222
+  # SSL配置只在 ssl.mode=direct 时生效，通过Java配置类控制
+  ssl:
+    enabled: false  # 默认禁用，由Java配置类动态启用
+    key-store: classpath:keystore.p12
+    key-store-password: [REDACTED]
+    key-store-type: PKCS12
+    key-alias: tomcat
+    enabled-protocols: TLSv1.2,TLSv1.3
+    ciphers: TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+    session:
+      timeout: 1800
+      cache-size: 10000
+
+# 全局SSL设置
+ssl:
+  # SSL模式: none(禁用), direct(直接SSL), proxy(反向代理SSL)
+  mode: proxy
+  # SSL端口（仅在direct模式下使用）
+  port: 8443
+# 应用域名配置
+app:
+  # 应用主域名，用于CORS设置
+  domain: [REDACTED]
+
+spring:
+  mail:
+    host: smtp.qq.com
+    port: 465
+    username: [REDACTED]
+    password: [REDACTED]
+    protocol: smtps
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+          ssl:
+            trust: "*"
+          # 超时设置
+          timeout: 5000
+          connectiontimeout: 5000
+          writetimeout: 5000
+
+  # Thymeleaf 模板配置
+  thymeleaf:
+    # 模板模式，支持 HTML5
+    mode: HTML
+    # 编码格式
+    encoding: UTF-8
+    # 模板缓存，开发时可设为 false
+    cache: true
+    # 模板路径前缀
+    prefix: classpath:/templates/
+    # 后缀
+    suffix: .html
+
+  # 应用名称配置
+  application:
+    name: AnkiServer
+
+  # 重试配置
+  retry:
+    # 是否启用重试机制
+    enabled: true
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQL8Dialect
+        format_sql: true
+        physical_naming_strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+        # 添加以下配置
+        globally_quoted_identifiers: true
+        globally_quoted_identifiers_skip_column_definitions: true
+        # 添加命名策略
+        naming:
+          physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+          implicit-strategy: org.hibernate.boot.model.naming.ImplicitNamingStrategyLegacyJpaImpl
+    show-sql: false
+    # 添加数据库平台设置
+    database-platform: org.hibernate.dialect.MySQL8Dialect
+    generate-ddl: true
+  datasource:
+    url: jdbc:mysql://[REDACTED_HOST]:[REDACTED_PORT]/[REDACTED_DATABASE]?useSSL=false&createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&lower_case_table_names=1
+    username: [REDACTED]
+    password: [REDACTED]
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      maximum-pool-size: 10
+      minimum-idle: 5
+      auto-commit: true
+      connection-test-query: SELECT 1
+  data:
+    redis:
+      repositories:
+        enabled: false
+      lettuce:
+        pool:
+          enabled: true
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+          max-wait: 1000ms
+      host: [REDACTED_HOST]
+      port: [REDACTED_PORT]
+      password: [REDACTED]
+      client-type: lettuce
+      connect-timeout: 5000
+      database: 0
+  rabbitmq:
+    host: [REDACTED_HOST]
+    port: 5672
+    username: [REDACTED]
+    password: [REDACTED]
+    listener:
+      simple:
+        retry:
+          enabled: true
+          initial-interval: 1000
+          max-attempts: 3
+          multiplier: 2.0
+          max-interval: 10000
+redisson:
+  lock:
+    watchdog:
+      timeout: 30000  # 看门狗超时时间，单位：毫秒
+
+minio:
+  url: [REDACTED_URL]
+  access:
+    key: [REDACTED]
+  secret:
+    key: [REDACTED]
+  bucket:
+    name: ankiserver
+  presigned:
+    enabled: true
+    expiry: 7
+
+servlet:
+  multipart:
+    enabled: true
+    max-file-size: 2MB
+    max-request-size: 2MB
+alipay:
+  appId: [REDACTED]
+  privateKey: "[REDACTED]"
+  publicKey: "[REDACTED]"
+  unifiedCallbackUrl: http://[REDACTED_HOST]:[REDACTED_PORT]/api/alipay/notify
+  notifyUrl: http://[REDACTED_HOST]:[REDACTED_PORT]/api/alipay/order/notify
+  withdrawNotifyUrl: http://[REDACTED_HOST]:[REDACTED_PORT]/api/alipay/withdraw/notify
+  gatewayUrl: https://openapi-sandbox.dl.alipaydev.com/gateway.do  # 沙箱环境
+  returnUrl: http://[REDACTED_HOST]:[REDACTED_PORT]/payment/return
+  ws:
+    serverHost: openchannel-sandbox.dl.alipaydev.com  # 生产环境地址
+    bizThreadPoolCoreSize: 16
+    bizThreadPoolMaxSize: 32
+  oauth:
+    serverUrl: https://openauth-sandbox.dl.alipaydev.com/oauth2/publicAppAuthorize.htm
+    redirect-uri: http://[REDACTED_HOST]:[REDACTED_PORT]/alipay/callback
+    scope: auth_user
+    theme: default
+jwt:
+  secret: [REDACTED]
+  access-token-expiration: 300000  # 5分钟，单位是毫秒
+  refresh-token-expiration: 86400000  # 24小时，单位是毫秒
+
+#MailOrder 配置
+mailorder:
+  business-hours:
+    open-hour: 7
+    close-hour: 22
+    max-advance-booking-days: 7
+    enable-business-hour-check: true
+    business-hour-error-msg: "配送时间必须在营业时间(07:00-22:00)内"
+    advance-booking-error-msg: "配送时间不能超过7天"
+    past-time-error-msg: "配送时间不能早于当前时间"
+  # 基础系统配置
+  platform-coefficient: 1.2      # 平台系数，用于调整整体费率
+  warning-threshold: 0.8        # 预警阈值，用于系统监控
+  check-interval: 60000        # 检查间隔时间（毫秒）
+  max-timeout-threshold: 5     # 最大超时次数阈值
+
+  # 统计相关配置
+  report-retention-days: 30    # 报表保留天数
+  max-top-users-count: 10      # 最大统计用户数量
+
+  # 订单超时配置
+  order-timeout:
+    general-timeout: 30            # 通用超时时间（分钟）
+    payment-timeout: 30            # 支付超时时间（分钟）
+    assignment-timeout: 15         # 接单超时时间（分钟）
+    pickup-validation-timeout: 10  # 取件验证超时时间（分钟）
+    delivery-validation-timeout: 15 # 送达验证超时时间（分钟）
+    enable-timeout-warning: true   # 是否启用超时预警
+    warning-advance-time: 5        # 预警提前时间（分钟）
+    max-retry-attempts: 3          # 最大重试次数
+    retry-interval: 5              # 重试间隔（分钟）
+
+  # 服务配置
+  service-configs:
+    # 标准服务配置
+    STANDARD:
+      pickup-timeout: 45           # 取件超时时间（分钟）
+      delivery-timeout: 120        # 配送超时时间（分钟）
+      confirmation-timeout: 30     # 确认超时时间（分钟）
+      delivery-time: 120          # 预计配送时间（分钟）
+      max-distance: 5000          # 最大配送距离（米）
+      max-weight: 20.0            # 最大重量限制（kg）
+      timeout-fee:
+        pickup-timeout-fee: 5.0    # 取件超时费用
+        delivery-timeout-fee: 10.0 # 配送超时费用
+        large-item-multiplier: 1.5 # 大件商品倍数
+        weight-multiplier: 0.5     # 重量倍数
+        hourly-increment-percentage: 0.5  # 每小时增长百分比
+        max-hourly-increments: 3   # 最大小时增长次数
+        cumulative-calculation: true     # 是否启用累计计算
+        grace-period-minutes: 10         # 宽限期（分钟）
+        base-multiplier: 1.0             # 基础倍数
+        max-multiplier: 3.0              # 最大倍数
+        apply-to-large-items: true       # 是否适用于大件
+        minimum-charge: 1.0              # 最低收费
+        evaluation-interval-minutes: 30   # 评估间隔（分钟）
+        enable-progressive-rate: true     # 是否启用累进费率
+        level-multipliers:               # 超时等级费率
+          1: 1.2                        # 1级超时倍数
+          2: 1.5                        # 2级超时倍数
+          3: 2.0                        # 3级超时倍数
+
+    # 快递服务配置
+    EXPRESS:
+      pickup-timeout: 20           # 取件超时时间（分钟）
+      delivery-timeout: 60         # 配送超时时间（分钟）
+      confirmation-timeout: 15     # 确认超时时间（分钟）
+      delivery-time: 60           # 预计配送时间（分钟）
+      max-distance: 3000          # 最大配送距离（米）
+      max-weight: 10.0            # 最大重量限制（kg）
+      timeout-fee:
+        pickup-timeout-fee: 10.0   # 取件超时费用
+        delivery-timeout-fee: 20.0 # 配送超时费用
+        large-item-multiplier: 2.0 # 大件商品倍数
+        weight-multiplier: 1.0     # 重量倍数
+        hourly-increment-percentage: 0.8  # 每小时增长百分比
+        max-hourly-increments: 4   # 最大小时增长次数
+        cumulative-calculation: true     # 是否启用累计计算
+        grace-period-minutes: 5          # 宽限期（分钟）
+        base-multiplier: 1.2            # 基础倍数
+        max-multiplier: 4.0             # 最大倍数
+        apply-to-large-items: true      # 是否适用于大件
+        minimum-charge: 2.0             # 最低收费
+        evaluation-interval-minutes: 15  # 评估间隔（分钟）
+        enable-progressive-rate: true    # 是否启用累进费率
+
+  # 距离费用配置
+  distance-fee:
+    base-free-distance: 3.0       # 基础免费距离（公里）
+    rate-per-km:                  # 每公里费率
+      STANDARD: 0.5               # 标准服务每公里费率
+      EXPRESS: 1.0                # 快递服务每公里费率
+    max-distance:                 # 最大配送距离
+      STANDARD: 5.0               # 标准服务最大距离（公里）
+      EXPRESS: 3.0                # 快递服务最大距离（公里）
+
+  # 费用分配配置
+  fee-distribution:
+    user-ratio: 0.9              # 用户收入比例
+    platform-ratio: 0.1          # 平台收入比例
+
+fee:
+  # 基础费率配置
+  rate-configs:
+    MAIL_ORDER:
+      base-rate: 0.10
+      service-rate: 0.05
+      large-item-rate: 1.50
+      weight-rate: 0.50
+      insurance-rate: 0.01
+    SHOPPING_ORDER:
+      base-rate: 0.05
+      service-rate: 0.03
+      large-item-rate: 1.30
+      weight-rate: 0.40
+      insurance-rate: 0.008
+    PURCHASE_ORDER:
+      base-rate: 0.15
+      service-rate: 0.08
+      large-item-rate: 1.40
+      weight-rate: 0.45
+      insurance-rate: 0.012
+
+  # 平台费率配置
+  platform-rates:
+    BRONZE: 0.12
+    SILVER: 0.10
+    GOLD: 0.08
+    PLATINUM: 0.06
+    DIAMOND: 0.05
+
+  # 区域费率配置
+  region-config:
+    region-multipliers:
+      DEFAULT: 1.0
+
+  # 距离费率配置
+  distance-config:
+    base-free-distance: 3.0
+    rate-per-km:
+      MAIL_ORDER: 0.5
+      SHOPPING_ORDER: 0.3
+      PURCHASE_ORDER: 0.4
+    max-distance:
+      MAIL_ORDER: 5.0
+      SHOPPING_ORDER: 3.0
+      PURCHASE_ORDER: 4.0
+
+  # 超时费用配置
+  timeout-config:
+    timeout-fees:
+      MAIL_ORDER:
+        PICKUP: 5.0
+        DELIVERY: 10.0
+        CONFIRMATION: 2.0
+      SHOPPING_ORDER:
+        PICKUP: 8.0
+        DELIVERY: 15.0
+        CONFIRMATION: 3.0
+    large-item-timeout-multipliers:
+      MAIL_ORDER: 1.5
+      SHOPPING_ORDER: 2.0
+    weight-timeout-multipliers:
+      MAIL_ORDER: 0.5
+      SHOPPING_ORDER: 0.8
+    holiday-multiplier: 1.5
+    max-hourly-increments: 4
+    hourly-increment-rate: 0.2
+    pickup-timeout:
+      MAIL_ORDER: 45
+      SHOPPING_ORDER: 30
+    delivery-timeout:
+      MAIL_ORDER: 120
+      SHOPPING_ORDER: 90
+    confirmation-timeout:
+      MAIL_ORDER: 30
+      SHOPPING_ORDER: 20
+
+  # 费用分配配置
+  distribution-rates:
+    platform-rates:
+      MAIL_ORDER: 0.1
+      SHOPPING_ORDER: 0.15
+    delivery-rates:
+      MAIL_ORDER: 0.8
+      SHOPPING_ORDER: 0.75
+    merchant-rates:
+      MAIL_ORDER: 0.1
+      SHOPPING_ORDER: 0.1
+
+  # 增值服务配置
+  value-added-service-config:
+    insurance-rates:
+      MAIL_ORDER: 0.01
+      SHOPPING_ORDER: 0.02
+    signature-service-fees:
+      MAIL_ORDER: 2.0
+      SHOPPING_ORDER: 3.0
+    packaging-service-fees:
+      MAIL_ORDER: 5.0
+      SHOPPING_ORDER: 8.0
+
+  # 特殊日期配置
+  special-date-config:
+    enable-holiday-multiplier: true
+    enable-special-date-rate: true
+    enable-special-time-multiplier: true
+    holiday-multiplier: 1.5
+    holiday-api:
+      url: "http://api.haoshenqi.top/holiday"
+      cron: "0 0 1 * * ?"
+      batch-months: 3
+      cache-prefix: "holiday:"
+      cache-duration: 86400
+
+wallet:
+  cooldown:
+    period: 24
+
+refund:
+  mode: DELIVERER_ONLY
+  platform-percentage: 0
+
+amap:
+  key: [REDACTED]
+  web-key: [REDACTED]
+
+token:
+  # Token 过期时间配置（毫秒）
+  expiration:
+    access: 300000    # 5分钟，用于访问令牌
+    refresh: 86400000  # 1天，用于刷新令牌
+
+payment:
+  timeout:
+    # 支付超时时间（分钟）
+    duration: 30
