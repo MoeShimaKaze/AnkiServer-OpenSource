@@ -16,6 +16,10 @@ import com.server.anki.user.User;
 import com.server.anki.user.UserRepository;
 import com.server.anki.user.enums.UserIdentity;
 import com.server.anki.user.enums.UserVerificationStatus;
+import com.server.anki.wallet.message.BalanceChangeMessage;
+import com.server.anki.wallet.message.WalletInitMessage;
+import com.server.anki.wallet.message.WalletMessageUtils;
+import com.server.anki.wallet.service.WalletTransactionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -62,6 +66,10 @@ public class TimeoutStatisticsDataGenerator {
     @Autowired
     private RegionService regionService;
 
+    // 添加钱包交易服务依赖
+    @Autowired
+    private WalletTransactionService walletTransactionService;
+
     private final Random random = new Random();
 
     // 添加测试标记常量
@@ -101,6 +109,10 @@ public class TimeoutStatisticsDataGenerator {
     private final List<String> unitNumbers = Arrays.asList("1单元", "2单元", "3单元", "东单元", "西单元", "");
     private final List<String> roomNumbers = Arrays.asList("101室", "202室", "303室", "405室", "506室", "608室", "701室", "801室", "902室", "1001室");
 
+    // 钱包余额范围
+    private static final int MIN_WALLET_BALANCE = 100;
+    private static final int MAX_WALLET_BALANCE = 1000;
+
     /**
      * 生成随机门牌号详情
      * @return 格式化的门牌号字符串
@@ -136,6 +148,9 @@ public class TimeoutStatisticsDataGenerator {
             allUsers.addAll(deliveryUsers);
             logger.info("已生成 {} 个普通用户和 {} 个配送用户", normalUsers.size(), deliveryUsers.size());
 
+            // 1.1 新增：为所有用户创建钱包并添加初始余额
+            initializeWalletsForUsers(allUsers);
+            logger.info("已为 {} 个用户创建钱包并添加初始余额", allUsers.size());
             // 2. 生成商家数据
             List<MerchantInfo> merchants = generateMerchants(15, normalUsers);
             logger.info("已生成 {} 个商家信息", merchants.size());
@@ -168,6 +183,63 @@ public class TimeoutStatisticsDataGenerator {
             logger.error("生成测试数据时发生错误", e);
             throw new RuntimeException("生成测试数据失败", e);
         }
+    }
+
+    /**
+     * 为用户初始化钱包并添加随机初始余额
+     * 使用系统的handleWalletInit方法确保一致性
+     *
+     * @param users 需要初始化钱包的用户列表
+     */
+    private void initializeWalletsForUsers(List<User> users) {
+        logger.info("开始为用户初始化钱包和基础余额...");
+
+        int createdCount = 0;
+        int updatedCount = 0;
+
+        for (User user : users) {
+            try {
+                // 1. 创建钱包初始化消息
+                WalletInitMessage initMessage = WalletMessageUtils.createInitMessage(
+                        user.getId(),
+                        user.getUsername(),
+                        user.getUserVerificationStatus().name()
+                );
+
+                // 2. 调用现有服务初始化钱包
+                walletTransactionService.handleWalletInit(initMessage);
+
+                // 3. 添加初始余额
+                BigDecimal initialBalance = BigDecimal.valueOf(
+                        MIN_WALLET_BALANCE + random.nextInt(MAX_WALLET_BALANCE - MIN_WALLET_BALANCE + 1)
+                );
+
+                // 4. 创建余额变更消息
+                BalanceChangeMessage balanceMessage = WalletMessageUtils.createBalanceChangeMessage(
+                        user.getId(),
+                        initialBalance,
+                        "测试数据初始余额",
+                        BalanceChangeMessage.BalanceChangeType.AVAILABLE
+                );
+
+                // 5. 处理余额变更
+                walletTransactionService.handleBalanceChange(balanceMessage);
+
+                createdCount++;
+                logger.debug("为用户 {} 创建钱包并设置初始余额: {}", user.getId(), initialBalance);
+
+                // 每处理10个用户记录一次进度
+                if (createdCount % 10 == 0) {
+                    logger.info("已处理 {} 个用户的钱包初始化", createdCount);
+                }
+
+            } catch (Exception e) {
+                logger.error("为用户 {} 初始化钱包时发生错误: {}", user.getId(), e.getMessage(), e);
+                // 继续处理其他用户，不中断整个初始化过程
+            }
+        }
+
+        logger.info("用户钱包初始化完成，共处理 {} 个用户", createdCount);
     }
 
     /**

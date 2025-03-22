@@ -106,37 +106,42 @@ public class GlobalTimeoutService {
                     continue;
                 }
 
-                Boolean result = transactionTemplate.execute(status -> {
-                    try {
-                        TimeoutResults.TimeoutCheckResult checkResult = checkOrderTimeout(order, now);
-                        if (checkResult.status() != TimeoutStatus.NORMAL) {
-                            timeoutHandler.handleTimeoutResult(order, checkResult);
+                // 使用不同的事务处理方式，直接处理结果而不是通过返回值
+                try {
+                    transactionTemplate.execute(status -> {
+                        try {
+                            TimeoutResults.TimeoutCheckResult checkResult = checkOrderTimeout(order, now);
+                            if (checkResult.status() != TimeoutStatus.NORMAL) {
+                                timeoutHandler.handleTimeoutResult(order, checkResult);
+                            }
+                            return null;  // 正常完成
+                        } catch (Exception e) {
+                            // 捕获异常并记录，但不标记事务回滚
+                            logger.error("处理订单 {} 超时检查时发生错误: {}",
+                                    order.getOrderNumber(), e.getMessage(), e);
+                            status.setRollbackOnly(); // 明确标记本事务回滚
+                            return null;  // 返回null表示处理完成
                         }
-                        return true;
-                    } catch (Exception e) {
-                        status.setRollbackOnly();
-                        logger.error("处理订单 {} 超时检查时发生错误: {}",
-                                order.getOrderNumber(), e.getMessage(), e);
-                        return false;
-                    }
-                });
-
-                if (Boolean.TRUE.equals(result)) {
-                    successCount++;
-                } else {
+                    });
+                    successCount++;  // 事务正常完成，视为成功
+                } catch (Exception e) {
+                    // 事务本身抛出异常
                     failureCount++;
+                    logger.error("处理订单 {} 时事务执行失败: {}",
+                            order.getOrderNumber(), e.getMessage(), e);
+                }
+
+                processedCount++;
+
+                // 每处理100个订单记录一次日志
+                if (processedCount % 100 == 0) {
+                    logger.debug("已处理 {}/{} 个订单", processedCount, activeOrders.size());
                 }
             } catch (Exception e) {
+                // 外层捕获所有可能的异常
                 failureCount++;
-                logger.error("处理订单 {} 时事务执行失败: {}",
+                logger.error("处理订单 {} 过程中发生未预期错误: {}",
                         order.getOrderNumber(), e.getMessage(), e);
-            }
-
-            processedCount++;
-
-            // 每处理100个订单记录一次日志
-            if (processedCount % 100 == 0) {
-                logger.debug("已处理 {}/{} 个订单", processedCount, activeOrders.size());
             }
         }
 

@@ -4,25 +4,27 @@ import com.server.anki.fee.calculator.TimeoutFeeCalculator;
 import com.server.anki.fee.model.FeeTimeoutType;
 import com.server.anki.mailorder.entity.MailOrder;
 import com.server.anki.mailorder.enums.OrderStatus;
+import com.server.anki.mailorder.repository.MailOrderRepository;
 import com.server.anki.mailorder.service.MailOrderService;
 import com.server.anki.message.MessageType;
 import com.server.anki.message.service.MessageService;
 import com.server.anki.shopping.entity.PurchaseRequest;
 import com.server.anki.shopping.entity.ShoppingOrder;
+import com.server.anki.shopping.repository.PurchaseRequestRepository;
+import com.server.anki.shopping.repository.ShoppingOrderRepository;
 import com.server.anki.shopping.service.PurchaseRequestService;
 import com.server.anki.shopping.service.ShoppingOrderService;
 import com.server.anki.timeout.core.TimeoutOrderType;
 import com.server.anki.timeout.core.Timeoutable;
 import com.server.anki.timeout.entity.TimeoutResults;
 import com.server.anki.timeout.enums.TimeoutStatus;
+import com.server.anki.timeout.event.TimeoutEvent;
 import com.server.anki.utils.TestMarkerUtils;
 import com.server.anki.wallet.service.WalletService;
-import com.server.anki.mailorder.repository.MailOrderRepository;
-import com.server.anki.shopping.repository.PurchaseRequestRepository;
-import com.server.anki.shopping.repository.ShoppingOrderRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -68,9 +70,13 @@ public class GlobalTimeoutHandler {
     @Autowired
     private PurchaseRequestRepository purchaseRequestRepository;
 
+    // 添加应用事件发布器
+    @Autowired
+    private ApplicationEventPublisher eventPublisher;
+
     /**
      * 处理超时检查结果
-     * 整合了OrderTimeoutHandler的逻辑
+     * 修改：优化异常处理，不再向上抛出异常
      */
     public void handleTimeoutResult(Timeoutable order, TimeoutResults.TimeoutCheckResult result) {
         if (result.status() == TimeoutStatus.NORMAL) {
@@ -78,6 +84,7 @@ public class GlobalTimeoutHandler {
         }
 
         try {
+            // 直接调用方法而不赋值给变量
             switch (result.status()) {
                 case PICKUP_TIMEOUT -> handlePickupTimeout(order);
                 case DELIVERY_TIMEOUT -> handleDeliveryTimeout(order);
@@ -87,70 +94,124 @@ public class GlobalTimeoutHandler {
                 default -> logger.debug("当前状态无需处理: {}", result.status());
             }
 
-            // 发送超时事件以更新统计
+            // 即使处理不完全成功，也发送超时事件以更新统计
             if (result.isTimeout()) {
                 Long userId = order.getAssignedUser() != null ? order.getAssignedUser().getId() : null;
-                // 这里可以发布事件更新统计
-                logger.info("发送超时事件，类型: {}, 用户ID: {}", result.type(), userId);
+                String timeoutTypeStr = result.type() != null ? result.type().name() : "UNKNOWN";
+
+                // 发布事件用于统计和分析
+                try {
+                    TimeoutEvent timeoutEvent = new TimeoutEvent(order, timeoutTypeStr, userId);
+                    eventPublisher.publishEvent(timeoutEvent);
+                    logger.info("发送超时事件，类型: {}, 用户ID: {}", timeoutTypeStr, userId);
+                } catch (Exception e) {
+                    logger.warn("发布超时事件时发生错误，但不影响主流程: {}", e.getMessage());
+                }
             }
         } catch (Exception e) {
+            // 捕获所有异常，但不再向上抛出
             logger.error("处理订单 {} 的超时状态时发生错误: {}",
                     order.getOrderNumber(), e.getMessage(), e);
-            throw e; // 向上抛出异常以便事务回滚
+            // 不抛出异常，避免事务回滚
+        }
+    }
+
+    /**
+     * 添加到GlobalTimeoutHandler类中
+     * 安全保存订单的辅助方法
+     */
+    private boolean saveOrderSafely(Timeoutable order) {
+        try {
+            saveOrder(order);
+            return true;
+        } catch (Exception e) {
+            logger.error("安全保存订单 {} 时发生错误: {}",
+                    order.getOrderNumber(), e.getMessage(), e);
+            return false;
         }
     }
 
     /**
      * 处理取件超时
-     * 整合了OrderTimeoutHandler的处理逻辑
+     * 修改：添加返回值表示处理结果，不再抛出异常
      */
-    protected void handlePickupTimeout(Timeoutable order) {
+    protected boolean handlePickupTimeout(Timeoutable order) {
         TimeoutOrderType orderType = order.getTimeoutOrderType();
         logger.info("处理{}订单的取件超时: {}", orderType.getShortName(), order.getOrderNumber());
 
         try {
             // 增加超时计数
             order.setTimeoutCount(order.getTimeoutCount() + 1);
-            saveOrder(order);
+            boolean savedSuccessfully = saveOrderSafely(order);
 
+            if (!savedSuccessfully) {
+                logger.warn("订单 {} 更新超时计数失败，但将继续处理", order.getOrderNumber());
+            }
+
+            boolean success = true;
             // 根据订单类型处理超时罚款
             switch (orderType) {
-                case MAIL_ORDER -> handleMailOrderPickupTimeout((MailOrder) order);
+                case MAIL_ORDER -> success = handleMailOrderPickupTimeout((MailOrder) order);
                 case SHOPPING_ORDER -> handleShoppingOrderPickupTimeout((ShoppingOrder) order);
                 case PURCHASE_REQUEST -> handlePurchaseRequestPickupTimeout((PurchaseRequest) order);
             }
 
-            logger.info("{}订单 {} 取件超时处理完成", orderType.getShortName(), order.getOrderNumber());
+            logger.info("{}订单 {} 取件超时处理{}",
+                    orderType.getShortName(),
+                    order.getOrderNumber(),
+                    success ? "完成" : "部分完成，存在错误");
+
+            return success;
         } catch (Exception e) {
             logger.error("处理{}订单 {} 取件超时错误: {}",
                     orderType.getShortName(), order.getOrderNumber(), e.getMessage(), e);
-            throw new RuntimeException("取件超时处理失败", e);
+            return false;
         }
     }
 
     /**
      * 处理快递代拿订单的取件超时
-     * 从OrderTimeoutHandler迁移的逻辑
+     * 修改：添加返回值表示处理结果，不再抛出异常
      */
-    private void handleMailOrderPickupTimeout(MailOrder order) {
+    private boolean handleMailOrderPickupTimeout(MailOrder order) {
+        boolean success = true;
         if (order.getAssignedUser() != null) {
             // 计算超时费用
             BigDecimal timeoutFee = calculateTimeoutFee(order, FeeTimeoutType.PICKUP);
 
             if (timeoutFee.compareTo(BigDecimal.ZERO) > 0) {
-                processTimeoutFee(order, timeoutFee, "取件超时罚金");
+                boolean feeProcessed = processTimeoutFee(order, timeoutFee, "取件超时罚金");
+                if (!feeProcessed) {
+                    logger.warn("订单 {} 处理超时费用失败，但将继续处理订单状态", order.getOrderNumber());
+                    success = false;
+                }
             }
 
-            // 调用服务方法重置订单
-            mailOrderService.resetOrderForReassignment(order);
+            try {
+                // 调用服务方法重置订单
+                mailOrderService.resetOrderForReassignment(order);
+            } catch (Exception e) {
+                logger.error("重置订单 {} 分配状态时发生错误: {}",
+                        order.getOrderNumber(), e.getMessage(), e);
+                success = false;
+            }
 
             // 判断归档条件：STANDARD≥10次，EXPRESS≥3次
-            int archiveThreshold = order.getDeliveryService() == com.server.anki.mailorder.enums.DeliveryService.STANDARD ? 10 : 3;
-            if (order.getTimeoutCount() >= archiveThreshold) {
-                mailOrderService.archiveOrder(order);
-                logger.info("订单 {} 超过超时阈值 {}，已归档", order.getOrderNumber(), archiveThreshold);
+            try {
+                int archiveThreshold = order.getDeliveryService() ==
+                        com.server.anki.mailorder.enums.DeliveryService.STANDARD ? 10 : 3;
+                if (order.getTimeoutCount() >= archiveThreshold) {
+                    mailOrderService.archiveOrder(order);
+                    logger.info("订单 {} 超过超时阈值 {}，已归档",
+                            order.getOrderNumber(), archiveThreshold);
+                }
+            } catch (Exception e) {
+                logger.error("归档订单 {} 时发生错误: {}",
+                        order.getOrderNumber(), e.getMessage(), e);
+                success = false;
             }
         }
+        return success;
     }
 
     /**
@@ -442,24 +503,31 @@ public class GlobalTimeoutHandler {
 
     /**
      * 处理超时费用
+     * 修改：不再抛出异常，返回处理结果
      */
-    private void processTimeoutFee(Timeoutable order, BigDecimal timeoutFee, String reason) {
+    private boolean processTimeoutFee(Timeoutable order, BigDecimal timeoutFee, String reason) {
         try {
             if (order.getAssignedUser() == null) {
                 logger.warn("订单 {} 未分配配送员，无法处理超时费用", order.getOrderNumber());
-                return;
+                return true; // 无需处理超时费用，视为成功
             }
 
+            // 计算详细原因
             String detailedReason = reason + " - 订单号: " + order.getOrderNumber();
 
             // 从配送员账户扣除费用
-            walletService.addPendingFunds(
+            boolean walletUpdateSuccess = walletService.addPendingFunds(
                     order.getAssignedUser(),
                     timeoutFee.negate(),
                     detailedReason
             );
 
-            // 增加平台收入
+            if (!walletUpdateSuccess) {
+                logger.warn("订单 {} 处理超时费用失败: 钱包更新失败", order.getOrderNumber());
+                return false;
+            }
+
+            // 更新订单中的平台收入
             switch (order.getTimeoutOrderType()) {
                 case MAIL_ORDER -> {
                     MailOrder mailOrder = (MailOrder) order;
@@ -477,21 +545,34 @@ public class GlobalTimeoutHandler {
             }
 
             // 保存订单
-            saveOrder(order);
+            try {
+                saveOrder(order);
+            } catch (Exception e) {
+                logger.warn("订单 {} 的超时费用处理中保存订单失败: {}",
+                        order.getOrderNumber(), e.getMessage());
+                return false;
+            }
 
             // 发送通知
-            messageService.sendMessage(
-                    order.getAssignedUser(),
-                    String.format("由于%s，您的账户已扣除 %.2f 元罚款", reason, timeoutFee),
-                    MessageType.BILLING_INFO,
-                    null
-            );
+            try {
+                messageService.sendMessage(
+                        order.getAssignedUser(),
+                        String.format("由于%s，您的账户已扣除 %.2f 元罚款", reason, timeoutFee),
+                        MessageType.BILLING_INFO,
+                        null
+                );
+            } catch (Exception e) {
+                // 通知发送失败不影响主流程
+                logger.warn("订单 {} 的超时费用处理中发送通知失败: {}",
+                        order.getOrderNumber(), e.getMessage());
+            }
 
             logger.info("订单 {} 的超时费用 {} 已处理", order.getOrderNumber(), timeoutFee);
+            return true;
         } catch (Exception e) {
             logger.error("处理订单 {} 的超时费用时发生错误: {}",
                     order.getOrderNumber(), e.getMessage(), e);
-            throw e; // 向上抛出异常以便事务回滚
+            return false;  // 返回处理失败而不是抛出异常
         }
     }
 
