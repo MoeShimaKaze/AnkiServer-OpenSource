@@ -96,6 +96,8 @@ public class TimeoutStatisticsDataGenerator {
         logger.info("开始生成超时统计系统测试数据...");
 
         try {
+            // 首先生成配送区域数据，确保后续订单可以找到对应区域
+            generateTestDeliveryRegions();
             // 1. 生成用户数据
             List<User> normalUsers = generateNormalUsers(30);
             List<User> deliveryUsers = generateDeliveryUsers(20);
