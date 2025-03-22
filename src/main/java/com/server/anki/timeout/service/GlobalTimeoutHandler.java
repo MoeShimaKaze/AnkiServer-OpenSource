@@ -319,13 +319,16 @@ public class GlobalTimeoutHandler {
         return order.getTimeoutCount() >= threshold;
     }
 
-    /**
-     * 处理超时费用
-     */
     private void processTimeoutFee(Timeoutable order, BigDecimal timeoutFee, String reason) {
         try {
             if (order.getAssignedUser() == null) {
                 logger.warn("订单 {} 未分配配送员，无法处理超时费用", order.getOrderNumber());
+                return;
+            }
+
+            // 检查地址信息是否完整
+            if (isAddressInfoIncomplete(order)) {
+                logger.warn("订单 {} 的地址信息不完整，无法处理超时费用", order.getOrderNumber());
                 return;
             }
 
@@ -339,7 +342,6 @@ public class GlobalTimeoutHandler {
             );
 
             // 增加平台收入
-            // 注意：不同类型订单的字段名可能不同，这里需要根据实际情况调整
             switch (order.getTimeoutOrderType()) {
                 case MAIL_ORDER -> {
                     MailOrder mailOrder = (MailOrder) order;
@@ -372,6 +374,36 @@ public class GlobalTimeoutHandler {
             logger.error("处理订单 {} 的超时费用时发生错误: {}",
                     order.getOrderNumber(), e.getMessage(), e);
         }
+    }
+
+    /**
+     * 检查地址信息是否不完整
+     */
+    private boolean isAddressInfoIncomplete(Timeoutable order) {
+        switch (order.getTimeoutOrderType()) {
+            case MAIL_ORDER -> {
+                MailOrder mailOrder = (MailOrder) order;
+                return isNullOrEmpty(mailOrder.getPickupAddress()) || isNullOrEmpty(mailOrder.getDeliveryAddress());
+            }
+            case SHOPPING_ORDER -> {
+                ShoppingOrder shoppingOrder = (ShoppingOrder) order;
+                return isNullOrEmpty(shoppingOrder.getDeliveryAddress());
+            }
+            case PURCHASE_REQUEST -> {
+                PurchaseRequest purchaseRequest = (PurchaseRequest) order;
+                return isNullOrEmpty(purchaseRequest.getDeliveryAddress());
+            }
+            default -> {
+                return true;
+            }
+        }
+    }
+
+    /**
+     * 检查字符串是否为null或空
+     */
+    private boolean isNullOrEmpty(String str) {
+        return str == null || str.trim().isEmpty();
     }
 
     /**

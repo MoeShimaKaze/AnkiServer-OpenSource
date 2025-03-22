@@ -12,6 +12,7 @@ import com.server.anki.marketing.repository.SpecialTimeRangeRepository;
 import com.server.anki.shopping.entity.PurchaseRequest;
 import com.server.anki.shopping.entity.ShoppingOrder;
 import com.server.anki.timeout.core.Timeoutable;
+import com.server.anki.utils.MySQLSpatialUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -382,16 +383,42 @@ public class OrderArchiveService {
     }
 
     private void copyRegionInformation(MailOrder order, AbandonedOrder abandonedOrder) {
-        String pickupCoordinate = formatCoordinate(order.getPickupLongitude(), order.getPickupLatitude());
-        String deliveryCoordinate = formatCoordinate(order.getDeliveryLongitude(), order.getDeliveryLatitude());
+        // 初始化变量
+        Optional<DeliveryRegion> pickupRegion = Optional.empty();
+        Optional<DeliveryRegion> deliveryRegion = Optional.empty();
 
-        Optional<DeliveryRegion> pickupRegion = regionService.findRegionByCoordinate(pickupCoordinate);
-        Optional<DeliveryRegion> deliveryRegion = regionService.findRegionByCoordinate(deliveryCoordinate);
+        try {
+            // 仅在经纬度都不为null时才尝试查找区域
+            if (order.getPickupLongitude() != null && order.getPickupLatitude() != null) {
+                String pickupCoordinate = String.format("%.6f,%.6f", order.getPickupLongitude(), order.getPickupLatitude());
 
+                // 使用RegionService查找区域（它已正确使用MySQLSpatialUtils）
+                if (MySQLSpatialUtils.validateCoordinate(pickupCoordinate)) {
+                    pickupRegion = regionService.findRegionByCoordinate(pickupCoordinate);
+                }
+            }
+
+            if (order.getDeliveryLongitude() != null && order.getDeliveryLatitude() != null) {
+                String deliveryCoordinate = String.format("%.6f,%.6f", order.getDeliveryLongitude(), order.getDeliveryLatitude());
+
+                if (MySQLSpatialUtils.validateCoordinate(deliveryCoordinate)) {
+                    deliveryRegion = regionService.findRegionByCoordinate(deliveryCoordinate);
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("查询区域信息时发生错误: {}", e.getMessage());
+            // 错误不影响继续执行
+        }
+
+        // 设置区域信息（即使找不到区域也能继续）
         abandonedOrder.setPickupRegionName(pickupRegion.map(DeliveryRegion::getName).orElse(null));
         abandonedOrder.setDeliveryRegionName(deliveryRegion.map(DeliveryRegion::getName).orElse(null));
-        abandonedOrder.setCrossRegion(pickupRegion.isPresent() && deliveryRegion.isPresent()
-                && !pickupRegion.get().getId().equals(deliveryRegion.get().getId()));
+
+        // 仅在两个区域都有效时才设置跨区域标志
+        abandonedOrder.setCrossRegion(
+                pickupRegion.isPresent() && deliveryRegion.isPresent() &&
+                        !pickupRegion.get().getId().equals(deliveryRegion.get().getId())
+        );
     }
 
     private void copyTimeRangeInformation(MailOrder order, AbandonedOrder abandonedOrder) {

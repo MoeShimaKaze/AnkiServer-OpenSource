@@ -4,6 +4,9 @@ import com.server.anki.mailorder.entity.MailOrder;
 import com.server.anki.mailorder.enums.DeliveryService;
 import com.server.anki.mailorder.enums.OrderStatus;
 import com.server.anki.mailorder.repository.MailOrderRepository;
+import com.server.anki.marketing.region.DeliveryRegion;
+import com.server.anki.marketing.region.RegionService;
+import com.server.anki.marketing.region.model.RegionCreateRequest;
 import com.server.anki.shopping.entity.*;
 import com.server.anki.shopping.enums.*;
 import com.server.anki.shopping.repository.*;
@@ -54,6 +57,9 @@ public class TimeoutStatisticsDataGenerator {
 
     @Autowired
     private PurchaseRequestRepository purchaseRequestRepository;
+
+    @Autowired
+    private RegionService regionService;
 
     private final Random random = new Random();
 
@@ -326,6 +332,122 @@ public class TimeoutStatisticsDataGenerator {
             }
         }
         return products;
+    }
+
+    /**
+     * 生成测试配送区域
+     * 为测试中使用的每个城市创建一个配送区域
+     */
+    private void generateTestDeliveryRegions() {
+        logger.info("开始生成测试配送区域数据...");
+
+        // 检查是否已存在配送区域，避免重复创建
+        List<DeliveryRegion> existingRegions = regionService.getAllRegions();
+        if (!existingRegions.isEmpty()) {
+            logger.info("系统中已存在{}个配送区域，跳过测试区域生成", existingRegions.size());
+            return;
+        }
+
+        // 为每个城市创建测试区域
+        for (int i = 0; i < cities.size(); i++) {
+            String city = cities.get(i);
+
+            try {
+                // 生成一个覆盖该城市的矩形配送区域
+                createCityDeliveryRegion(city, i);
+                logger.info("成功创建{}的配送区域", city);
+            } catch (Exception e) {
+                logger.warn("创建{}配送区域失败: {}", city, e.getMessage());
+            }
+        }
+
+        // 创建一个覆盖所有城市的全局配送区域，作为兜底
+        try {
+            createGlobalDeliveryRegion();
+            logger.info("成功创建全局配送区域");
+        } catch (Exception e) {
+            logger.warn("创建全局配送区域失败: {}", e.getMessage());
+        }
+
+        logger.info("测试配送区域数据生成完成");
+    }
+
+    /**
+     * 为单个城市创建配送区域
+     */
+    private void createCityDeliveryRegion(String city, int index) {
+        // 为每个城市设置不同的基准坐标，避免区域重叠
+        double baseLat = 20.0 + index * 2.0;  // 基础纬度（北纬20-40度范围内）
+        double baseLng = 100.0 + index * 2.0; // 基础经度（东经100-120度范围内）
+
+        // 创建一个矩形区域，边长约为1度（大约111公里）
+        double offset = 0.5; // 向四周扩展0.5度
+
+        // 创建4个点的多边形（四个角），按照"经度,纬度"格式
+        List<String> boundaryPoints = new ArrayList<>();
+
+        // 左下角
+        boundaryPoints.add(String.format("%.6f,%.6f", baseLng - offset, baseLat - offset));
+        // 右下角
+        boundaryPoints.add(String.format("%.6f,%.6f", baseLng + offset, baseLat - offset));
+        // 右上角
+        boundaryPoints.add(String.format("%.6f,%.6f", baseLng + offset, baseLat + offset));
+        // 左上角
+        boundaryPoints.add(String.format("%.6f,%.6f", baseLng - offset, baseLat + offset));
+
+        // 设置配送费率（不同城市费率有所不同）
+        double rateMultiplier = 1.0 + (index % 4) * 0.1; // 1.0, 1.1, 1.2, 1.3循环
+        int priority = 10 - index % 5; // 优先级10,9,8,7,6循环，数字越大优先级越高
+
+        // 创建请求对象 - 注意修正参数顺序
+        RegionCreateRequest request = new RegionCreateRequest(
+                city + "配送区",           // name
+                city + "及周边地区的配送范围", // description
+                rateMultiplier,           // rateMultiplier
+                priority,                 // priority
+                true,                     // active
+                boundaryPoints            // boundaryPoints
+        );
+
+        // 调用服务创建区域
+        regionService.createRegion(request);
+    }
+
+    /**
+     * 创建一个覆盖所有测试城市的全局配送区域
+     * 作为兜底区域，确保所有坐标都能找到对应区域
+     */
+    private void createGlobalDeliveryRegion() {
+        // 定义一个覆盖中国大部分地区的矩形区域
+        double minLng = 73.0;  // 最西点约为新疆
+        double maxLng = 135.0; // 最东点约为黑龙江
+        double minLat = 18.0;  // 最南点约为海南
+        double maxLat = 53.0;  // 最北点约为黑龙江
+
+        // 创建一个大矩形，按照"经度,纬度"格式
+        List<String> boundaryPoints = new ArrayList<>();
+
+        // 左下角
+        boundaryPoints.add(String.format("%.6f,%.6f", minLng, minLat));
+        // 右下角
+        boundaryPoints.add(String.format("%.6f,%.6f", maxLng, minLat));
+        // 右上角
+        boundaryPoints.add(String.format("%.6f,%.6f", maxLng, maxLat));
+        // 左上角
+        boundaryPoints.add(String.format("%.6f,%.6f", minLng, maxLat));
+
+        // 创建请求对象 - 注意修正参数顺序
+        RegionCreateRequest request = new RegionCreateRequest(
+                "全国配送区",              // name
+                "覆盖全国范围的兜底配送区域",  // description
+                1.5,                      // rateMultiplier
+                1,                        // priority
+                true,                     // active
+                boundaryPoints            // boundaryPoints
+        );
+
+        // 调用服务创建区域
+        regionService.createRegion(request);
     }
 
     /**
