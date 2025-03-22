@@ -94,6 +94,28 @@ public class TimeoutStatisticsDataGenerator {
     private final List<String> contactPhones = Arrays.asList("13800138000", "13900139000", "13700137000", "13600136000", "13500135000",
             "13400134000", "13300133000", "13200132000", "13100131000", "13000130000");
 
+    // 添加用于生成门牌号的列表
+    private final List<String> buildingNumbers = Arrays.asList("1号楼", "2号楼", "3号楼", "A座", "B座", "C座", "主楼", "东楼", "西楼");
+    private final List<String> unitNumbers = Arrays.asList("1单元", "2单元", "3单元", "东单元", "西单元", "");
+    private final List<String> roomNumbers = Arrays.asList("101室", "202室", "303室", "405室", "506室", "608室", "701室", "801室", "902室", "1001室");
+
+    /**
+     * 生成随机门牌号详情
+     * @return 格式化的门牌号字符串
+     */
+    private String generateRandomPickupDetail() {
+        String building = getRandomItem(buildingNumbers);
+        String unit = getRandomItem(unitNumbers);
+        String room = getRandomItem(roomNumbers);
+
+        // 某些情况下不需要单元信息
+        if (unit.isEmpty()) {
+            return building + " " + room;
+        }
+
+        return building + " " + unit + " " + room;
+    }
+
     /**
      * 生成测试数据的入口方法
      */
@@ -672,9 +694,16 @@ public class TimeoutStatisticsDataGenerator {
             order.setPickupAddress(pickupAddress);
             order.setPickupLatitude(generateRandomCoordinates()[0]);
             order.setPickupLongitude(generateRandomCoordinates()[1]);
+
+            // 设置取件门牌号详情 - 新增
+            order.setPickupDetail(generateRandomPickupDetail());
+
             order.setDeliveryAddress(deliveryAddress);
             order.setDeliveryLatitude(generateRandomCoordinates()[0]);
             order.setDeliveryLongitude(generateRandomCoordinates()[1]);
+
+            // 设置配送门牌号详情 - 新增
+            order.setDeliveryDetail(generateRandomPickupDetail());
 
             // 设置收件信息
             order.setPickupCode(generateRandomCode());
@@ -740,6 +769,8 @@ public class TimeoutStatisticsDataGenerator {
                 logger.warn("订单 {} 的配送地址为空，已设置默认地址", order.getOrderNumber());
             }
 
+            order.setPickupDetail(generateRandomPickupDetail());
+            order.setDeliveryDetail(generateRandomPickupDetail());
             order.setPickupAddress(pickupAddress);
             order.setPickupLatitude(generateRandomCoordinates()[0]);
             order.setPickupLongitude(generateRandomCoordinates()[1]);
@@ -812,7 +843,8 @@ public class TimeoutStatisticsDataGenerator {
                 deliveryAddress = "北京市朝阳区建国路2号 李先生 13800138000";
                 logger.warn("订单 {} 的配送地址为空，已设置默认地址", order.getOrderNumber());
             }
-
+            order.setPickupDetail(generateRandomPickupDetail());
+            order.setDeliveryDetail(generateRandomPickupDetail());
             order.setPickupAddress(pickupAddress);
             order.setPickupLatitude(generateRandomCoordinates()[0]);
             order.setPickupLongitude(generateRandomCoordinates()[1]);
@@ -906,7 +938,8 @@ public class TimeoutStatisticsDataGenerator {
                 deliveryAddress = "北京市朝阳区建国路2号 李先生 13800138000";
                 logger.warn("订单 {} 的配送地址为空，已设置默认地址", order.getOrderNumber());
             }
-
+            order.setPickupDetail(generateRandomPickupDetail());
+            order.setDeliveryDetail(generateRandomPickupDetail());
             order.setPickupAddress(pickupAddress);
             order.setPickupLatitude(generateRandomCoordinates()[0]);
             order.setPickupLongitude(generateRandomCoordinates()[1]);
@@ -2096,8 +2129,12 @@ public class TimeoutStatisticsDataGenerator {
         int fixedCount = 0;
 
         // 验证快递代拿订单
+        // 验证快递代拿订单
         for (MailOrder order : mailOrders) {
-            if (isNullOrEmpty(order.getPickupAddress()) || isNullOrEmpty(order.getDeliveryAddress())) {
+            if (isNullOrEmpty(order.getPickupAddress()) ||
+                    isNullOrEmpty(order.getDeliveryAddress()) ||
+                    isNullOrEmpty(order.getPickupDetail()) ||   // 增加门牌号验证
+                    isNullOrEmpty(order.getDeliveryDetail())) { // 增加门牌号验证
                 validateAndFixAddresses(order);
                 mailOrderRepository.save(order);
                 fixedCount++;
@@ -2140,10 +2177,22 @@ public class TimeoutStatisticsDataGenerator {
                     logger.info("修复订单 {} 的空取件地址", mailOrder.getOrderNumber());
                 }
 
+                // 验证并修复门牌号 - 新增
+                if (isNullOrEmpty(mailOrder.getPickupDetail())) {
+                    mailOrder.setPickupDetail(generateRandomPickupDetail());
+                    logger.info("修复订单 {} 的空取件门牌号", mailOrder.getOrderNumber());
+                }
+
                 // 验证并修复配送地址
                 if (isNullOrEmpty(mailOrder.getDeliveryAddress())) {
                     mailOrder.setDeliveryAddress(generateRandomDetailedAddress());
                     logger.info("修复订单 {} 的空配送地址", mailOrder.getOrderNumber());
+                }
+
+                // 验证并修复配送门牌号 - 新增
+                if (isNullOrEmpty(mailOrder.getDeliveryDetail())) {
+                    mailOrder.setDeliveryDetail(generateRandomPickupDetail());
+                    logger.info("修复订单 {} 的空配送门牌号", mailOrder.getOrderNumber());
                 }
 
                 // 验证并修复坐标信息
