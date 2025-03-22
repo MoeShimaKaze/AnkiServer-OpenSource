@@ -77,6 +77,38 @@ public class UserController {
         }
     }
 
+    @PostMapping("/usernames")
+    public ResponseEntity<?> getUsernamesByUserIds(@RequestBody List<Long> userIds,
+                                                   HttpServletRequest request,
+                                                   HttpServletResponse response) {
+        // 收到获取用户名的请求
+        logger.info("收到获取用户名的请求，用户ID列表：{}", userIds);
+        // 验证用户是否已登录
+        User authenticatedUser = authenticationService.getAuthenticatedUser(request, response);
+        if (authenticatedUser == null) {
+            // 未授权访问警告
+            logger.warn("未授权的获取用户名请求尝试");
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        try {
+            // 从数据库中批量获取用户
+            List<User> users = userService.getUsersByIds(userIds);
+
+            // 生成 userId -> username 的映射
+            Map<Long, String> usernameMap = users.stream()
+                    .collect(Collectors.toMap(User::getId, User::getUsername));
+
+            // 成功获取用户名日志
+            logger.info("成功获取用户名，用户ID列表：{}", userIds);
+            return ResponseEntity.ok(usernameMap);
+        } catch (Exception e) {
+            // 错误日志（包含异常堆栈）
+            logger.error("获取用户名时发生错误，用户ID列表：{}。错误信息：{}", userIds, e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("获取用户名失败: " + e.getMessage());
+        }
+    }
+
     /**
      * 根据用户名查找用户
      */
