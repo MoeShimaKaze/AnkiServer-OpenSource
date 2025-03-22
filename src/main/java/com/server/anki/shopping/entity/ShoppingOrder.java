@@ -1,7 +1,7 @@
 package com.server.anki.shopping.entity;
 
-import com.server.anki.fee.model.FeeableOrder;
 import com.server.anki.fee.model.FeeType;
+import com.server.anki.fee.model.FeeableOrder;
 import com.server.anki.fee.result.FeeResult;
 import com.server.anki.mailorder.enums.OrderStatus;
 import com.server.anki.shopping.enums.DeliveryType;
@@ -370,10 +370,16 @@ public class ShoppingOrder implements FeeableOrder, Timeoutable {
         }
         this.createdAt = LocalDateTime.now();
         this.updatedAt = LocalDateTime.now();
-        this.orderStatus = OrderStatus.PAYMENT_PENDING;
-        this.timeoutStatus = TimeoutStatus.NORMAL;
-        this.timeoutWarningSent = false;
-        this.timeoutCount = 0;
+
+        // 只在状态为null时设置默认值
+        if (this.orderStatus == null) {
+            this.orderStatus = OrderStatus.PAYMENT_PENDING;
+        }
+
+        // 检查并设置其他引用类型字段的默认值
+        if (this.timeoutStatus == null) {
+            this.timeoutStatus = TimeoutStatus.NORMAL;
+        }
     }
 
     @PreUpdate

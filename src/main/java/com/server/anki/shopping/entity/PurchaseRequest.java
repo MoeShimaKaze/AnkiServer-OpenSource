@@ -1,11 +1,11 @@
 package com.server.anki.shopping.entity;
 
-import com.server.anki.fee.model.FeeableOrder;
 import com.server.anki.fee.model.FeeType;
+import com.server.anki.fee.model.FeeableOrder;
 import com.server.anki.mailorder.enums.OrderStatus;
 import com.server.anki.shopping.enums.DeliveryType;
-import com.server.anki.shopping.enums.ProductCategory;
 import com.server.anki.shopping.enums.MerchantLevel;
+import com.server.anki.shopping.enums.ProductCategory;
 import com.server.anki.timeout.core.TimeoutOrderType;
 import com.server.anki.timeout.core.Timeoutable;
 import com.server.anki.timeout.enums.TimeoutStatus;
@@ -383,16 +383,25 @@ public class PurchaseRequest implements FeeableOrder, Timeoutable {
                         this.deliveredDate == null);
     }
 
+// PurchaseRequest.java中的@PrePersist方法修改
+
     @PrePersist
     protected void onCreate() {
-        this.requestNumber = UUID.randomUUID();
+        if (this.requestNumber == null) {
+            this.requestNumber = UUID.randomUUID();
+        }
         this.createdAt = LocalDateTime.now();
         this.updatedAt = LocalDateTime.now();
-        this.status = OrderStatus.PAYMENT_PENDING;
-        this.timeoutStatus = TimeoutStatus.NORMAL;
-        this.timeoutWarningSent = false;
-        this.timeoutCount = 0;
-        this.viewCount = 0; // 初始化浏览量为0
+
+        // 只在状态为null时设置默认值
+        if (this.status == null) {
+            this.status = OrderStatus.PAYMENT_PENDING;
+        }
+
+        // 检查并设置其他引用类型字段的默认值
+        if (this.timeoutStatus == null) {
+            this.timeoutStatus = TimeoutStatus.NORMAL;
+        }
     }
 
     @PreUpdate
