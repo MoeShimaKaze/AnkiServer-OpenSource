@@ -64,6 +64,8 @@ public class TimeoutStatisticsDataGenerator {
 
     private final Random random = new Random();
 
+    // 添加测试标记常量
+    private static final String TEST_ORDER_PREFIX = "[TEST]_";
     // 用于生成地址的城市和详细地址
     private final List<String> cities = Arrays.asList("北京市", "上海市", "广州市", "深圳市", "杭州市", "成都市", "武汉市", "西安市");
     private final List<String> districts = Arrays.asList("海淀区", "朝阳区", "浦东新区", "天河区", "南山区", "西湖区", "武侯区", "洪山区", "雁塔区");
@@ -166,6 +168,14 @@ public class TimeoutStatisticsDataGenerator {
             logger.error("生成测试数据时发生错误", e);
             throw new RuntimeException("生成测试数据失败", e);
         }
+    }
+
+    /**
+     * 生成随机代购订单标题
+     * 修改：添加测试标记前缀
+     */
+    private String generateRandomPurchaseTitle() {
+        return TEST_ORDER_PREFIX + getRandomItem(purchaseTitles);
     }
 
     /**
@@ -558,9 +568,10 @@ public class TimeoutStatisticsDataGenerator {
 
     /**
      * 生成随机订单名称
+     * 修改：添加测试标记前缀
      */
     private String generateRandomOrderName() {
-        return getRandomItem(orderNamePrefixes) + " " + generateRandomCode();
+        return TEST_ORDER_PREFIX + getRandomItem(orderNamePrefixes) + " " + generateRandomCode();
     }
 
     /**
@@ -1108,7 +1119,7 @@ public class TimeoutStatisticsDataGenerator {
 
             // 设置备注
             if (random.nextBoolean()) {
-                order.setRemark("请尽快配送，谢谢！");
+                order.setRemark(TEST_ORDER_PREFIX + "请尽快配送，谢谢！");
             }
 
             shoppingOrders.add(shoppingOrderRepository.save(order));
@@ -1651,7 +1662,7 @@ public class TimeoutStatisticsDataGenerator {
             request.setUser(customer);
 
             // 设置基本信息
-            request.setTitle(getRandomItem(purchaseTitles));
+            request.setTitle(generateRandomPurchaseTitle());
             request.setDescription("详细需求描述：请帮我购买这个商品，编号：" + (completedCount + i + 1));
             request.setCategory(getRandomProductCategory());
 

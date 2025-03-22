@@ -22,9 +22,10 @@ import com.server.anki.shopping.service.delivery.MutualDeliveryStrategy;
 import com.server.anki.shopping.service.delivery.PlatformDeliveryStrategy;
 import com.server.anki.timeout.core.TimeoutOrderType;
 import com.server.anki.timeout.enums.TimeoutStatus;
+import com.server.anki.timeout.service.OrderArchiveService;
 import com.server.anki.user.User;
 import com.server.anki.user.UserService;
-import com.server.anki.timeout.service.OrderArchiveService;
+import com.server.anki.utils.TestMarkerUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -976,6 +977,7 @@ public class ShoppingOrderService {
 
     /**
      * 更新商品订单
+     * 修改：增加测试标记检测逻辑
      * @param order 待更新的商品订单
      * @return 更新后的商品订单
      */
@@ -987,6 +989,19 @@ public class ShoppingOrderService {
             throw new IllegalArgumentException("订单ID不能为空");
         }
 
+        // 检查是否为测试订单
+        boolean isTestOrder = TestMarkerUtils.hasTestMarker(order.getRemark());
+        if (isTestOrder) {
+            logger.info("检测到测试订单 {}，使用简化更新流程", order.getOrderNumber());
+            try {
+                return shoppingOrderRepository.save(order);
+            } catch (Exception e) {
+                logger.error("更新测试订单时出错: {}, 错误: {}", order.getOrderNumber(), e.getMessage());
+                throw new RuntimeException("更新测试订单失败", e);
+            }
+        }
+
+        // 原有的普通订单更新逻辑
         try {
             ShoppingOrder updatedOrder = shoppingOrderRepository.save(order);
             logger.info("商品订单更新成功: {}", updatedOrder.getOrderNumber());

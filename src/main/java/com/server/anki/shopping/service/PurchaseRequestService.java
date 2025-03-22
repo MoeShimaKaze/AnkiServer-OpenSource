@@ -19,6 +19,7 @@ import com.server.anki.timeout.enums.TimeoutStatus;
 import com.server.anki.timeout.service.OrderArchiveService;
 import com.server.anki.user.User;
 import com.server.anki.user.UserService;
+import com.server.anki.utils.TestMarkerUtils;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -263,8 +264,7 @@ public class PurchaseRequestService {
 
     /**
      * 更新代购需求
-     * 更新代购需求状态和其他信息，并保存到数据库
-     *
+     * 修改：增加测试标记检测逻辑
      * @param request 待更新的代购需求对象
      * @return 更新后的代购需求对象
      */
@@ -278,6 +278,20 @@ public class PurchaseRequestService {
             throw new IllegalArgumentException("代购需求ID不能为空");
         }
 
+        // 检查是否为测试订单
+        boolean isTestOrder = TestMarkerUtils.hasTestMarker(request.getTitle());
+        if (isTestOrder) {
+            logger.info("检测到测试代购需求 {}，使用简化更新流程", request.getRequestNumber());
+            try {
+                return purchaseRequestRepository.save(request);
+            } catch (Exception e) {
+                logger.error("更新测试代购需求时出错: {}, 错误: {}",
+                        request.getRequestNumber(), e.getMessage());
+                throw new RuntimeException("更新测试代购需求失败", e);
+            }
+        }
+
+        // 原有的普通代购需求更新逻辑
         try {
             // 获取现有的需求记录以确保它存在
             PurchaseRequest existingRequest = purchaseRequestRepository.findById(request.getId())

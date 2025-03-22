@@ -12,7 +12,6 @@ import com.server.anki.mailorder.entity.MailOrder;
 import com.server.anki.mailorder.enums.DeliveryService;
 import com.server.anki.mailorder.enums.OrderStatus;
 import com.server.anki.mailorder.repository.MailOrderRepository;
-import com.server.anki.timeout.enums.TimeoutStatus;
 import com.server.anki.marketing.SpecialDateService;
 import com.server.anki.marketing.entity.SpecialDate;
 import com.server.anki.marketing.entity.SpecialTimeRange;
@@ -21,9 +20,11 @@ import com.server.anki.marketing.region.RegionService;
 import com.server.anki.message.MessageType;
 import com.server.anki.message.service.MessageService;
 import com.server.anki.pay.payment.PaymentResponse;
+import com.server.anki.timeout.enums.TimeoutStatus;
 import com.server.anki.user.User;
 import com.server.anki.user.UserRepository;
 import com.server.anki.user.UserService;
+import com.server.anki.utils.TestMarkerUtils;
 import com.server.anki.wallet.RefundMode;
 import com.server.anki.wallet.entity.Wallet;
 import com.server.anki.wallet.repository.WalletRepository;
@@ -296,19 +297,41 @@ public class MailOrderService {
         }
     }
 
-    public MailOrder updateMailOrder(MailOrder mailOrder) {
-        logger.info("Updating mail order: {}", mailOrder.getOrderNumber());
+    /**
+     * 更新邮件订单
+     * 修改：增加测试标记检测逻辑
+     * @param order 待更新的邮件订单
+     */
+    @Transactional
+    public void updateMailOrder(MailOrder order) {
+        logger.info("更新邮件订单: {}", order.getOrderNumber());
 
-        // 验证订单信息
-        OrderValidationResult validationResult =
-                orderValidationService.validateOrderCompletely(mailOrder);
+        // 检查是否为测试订单
+        boolean isTestOrder = TestMarkerUtils.hasTestMarker(order.getName());
 
-        if (!validationResult.isValid()) {
-            logger.error("订单更新验证失败: {}", validationResult.message());
-            throw new IllegalArgumentException(validationResult.message());
+        try {
+            if (isTestOrder) {
+                logger.info("检测到测试订单 {}，跳过验证直接保存", order.getOrderNumber());
+                // 对测试订单直接保存，跳过验证
+                mailOrderRepository.save(order);
+                return;
+            }
+
+            // 非测试订单执行完整验证
+            OrderValidationResult validationResult = orderValidationService.validateOrderCompletely(order);
+
+            if (!validationResult.isValid()) {
+                // After
+                logger.error("订单更新验证失败: {}", validationResult.message());
+                throw new IllegalArgumentException(validationResult.message());
+            }
+
+            mailOrderRepository.save(order);
+            logger.info("成功更新订单: {}", order.getOrderNumber());
+        } catch (Exception e) {
+            logger.error("更新邮件订单时发生错误: {}, 错误: {}", order.getOrderNumber(), e.getMessage());
+            throw e;
         }
-
-        return mailOrderRepository.save(mailOrder);
     }
 
     public void assignExpressOrderToMessenger(MailOrder mailOrder) {

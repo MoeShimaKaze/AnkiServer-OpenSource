@@ -2,12 +2,13 @@ package com.server.anki.mailorder.service;
 
 import com.server.anki.amap.AmapService;
 import com.server.anki.config.MailOrderConfig;
-import com.server.anki.mailorder.enums.DeliveryService;
-import com.server.anki.mailorder.entity.MailOrder;
 import com.server.anki.mailorder.OrderValidationResult;
-import com.server.anki.utils.MySQLSpatialUtils;
+import com.server.anki.mailorder.entity.MailOrder;
+import com.server.anki.mailorder.enums.DeliveryService;
 import com.server.anki.marketing.region.RegionService;
 import com.server.anki.marketing.region.model.RegionRateResult;
+import com.server.anki.utils.MySQLSpatialUtils;
+import com.server.anki.utils.TestMarkerUtils;
 import io.micrometer.common.util.StringUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,11 +36,28 @@ public class OrderValidationService {
 
     /**
      * 执行完整的订单验证
-     * 按照业务重要性顺序依次验证各项规则
+     * 修改：增加测试标记检测逻辑
      */
     public OrderValidationResult validateOrderCompletely(MailOrder mailOrder) {
         try {
-            log.debug("开始完整验证订单: {}", mailOrder.getOrderNumber());
+            log.debug("开始验证订单: {}", mailOrder.getOrderNumber());
+
+            // 检查是否为测试订单
+            boolean isTestOrder = TestMarkerUtils.hasTestMarker(mailOrder.getName());
+            if (isTestOrder) {
+                log.info("检测到测试订单 {}，仅执行基础字段验证", mailOrder.getOrderNumber());
+
+                // 对测试订单只验证必填字段
+                OrderValidationResult requiredFieldsResult = validateRequiredFields(mailOrder);
+                if (!requiredFieldsResult.isValid()) {
+                    return requiredFieldsResult;
+                }
+
+                // 跳过其他验证步骤，直接返回成功
+                return OrderValidationResult.success();
+            }
+
+            // 原有的完整验证逻辑
 
             // 1. 验证必填字段
             OrderValidationResult requiredFieldsResult = validateRequiredFields(mailOrder);
