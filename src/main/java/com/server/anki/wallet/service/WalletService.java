@@ -164,21 +164,42 @@ public class WalletService {
         sendWalletMessage(message);
     }
 
-    /**
-     * 增加待结算余额
-     */
     @Transactional(readOnly = true)
-    public void addPendingFunds(User user, BigDecimal amount, String reason) {
+    public boolean addPendingFunds(User user, BigDecimal amount, String reason) {
         logger.info("添加待结算金额: userId={}, amount={}", user.getId(), amount);
 
-        BalanceChangeMessage message = WalletMessageUtils.createBalanceChangeMessage(
-                user.getId(),
-                amount,
-                reason,
-                BalanceChangeMessage.BalanceChangeType.PENDING
-        );
+        try {
+            // 预检查钱包是否存在
+            Optional<Wallet> wallet = walletRepository.findByUser(user);
+            if (wallet.isEmpty()) {
+                // 钱包不存在，尝试实时创建
+                try {
+                    WalletInitMessage initMessage = WalletMessageUtils.createInitMessage(
+                            user.getId(),
+                            user.getUsername(),
+                            user.getUserVerificationStatus().name()
+                    );
+                    sendWalletMessage(initMessage);
+                    logger.info("用户 {} 钱包不存在，已发送初始化请求", user.getId());
+                } catch (Exception e) {
+                    logger.error("为用户 {} 初始化钱包失败: {}", user.getId(), e.getMessage());
+                    return false;
+                }
+            }
 
-        sendWalletMessage(message);
+            BalanceChangeMessage message = WalletMessageUtils.createBalanceChangeMessage(
+                    user.getId(),
+                    amount,
+                    reason,
+                    BalanceChangeMessage.BalanceChangeType.PENDING
+            );
+
+            sendWalletMessage(message);
+            return true;  // 消息发送成功
+        } catch (Exception e) {
+            logger.error("发送余额变更消息失败: userId={}, 错误={}", user.getId(), e.getMessage());
+            return false;  // 消息发送失败
+        }
     }
 
     /**
