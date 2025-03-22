@@ -2,6 +2,7 @@ package com.server.anki.timeout.service;
 
 import com.server.anki.config.MailOrderConfig;
 import com.server.anki.fee.calculator.TimeoutFeeCalculator;
+import com.server.anki.fee.model.FeeTimeoutType;
 import com.server.anki.mailorder.entity.AbandonedOrder;
 import com.server.anki.mailorder.entity.MailOrder;
 import com.server.anki.mailorder.enums.DeliveryService;
@@ -19,12 +20,15 @@ import com.server.anki.timeout.enums.TimeoutType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
-import com.server.anki.fee.model.FeeTimeoutType;
+
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -63,9 +67,10 @@ public class GlobalTimeoutService {
 
     @Autowired
     private AbandonedOrderRepository abandonedOrderRepository;
+
     /**
      * 定时检查所有类型订单的超时情况
-     * 修改：使用TransactionTemplate为每个订单创建独立事务，避免相互影响
+     * 修改：使用TransactionTemplate为每个订单创建独立事务，避免相互影响，增强归档状态检查
      */
     @Scheduled(fixedRateString = "${timeout.check-interval:60000}")
     public void checkAllOrderTimeouts() {
@@ -110,16 +115,25 @@ public class GlobalTimeoutService {
                 try {
                     transactionTemplate.execute(status -> {
                         try {
+                            // 在事务内再次检查归档状态，避免并发问题
+                            if (isOrderArchived(order.getOrderNumber())) {
+                                logger.debug("事务内检测到订单 {} 已归档，跳过处理", order.getOrderNumber());
+                                return null;
+                            }
+
                             TimeoutResults.TimeoutCheckResult checkResult = checkOrderTimeout(order, now);
                             if (checkResult.status() != TimeoutStatus.NORMAL) {
                                 timeoutHandler.handleTimeoutResult(order, checkResult);
                             }
                             return null;  // 正常完成
                         } catch (Exception e) {
-                            // 捕获异常并记录，但不标记事务回滚
+                            // 捕获异常并记录，但不再标记事务回滚
                             logger.error("处理订单 {} 超时检查时发生错误: {}",
                                     order.getOrderNumber(), e.getMessage(), e);
-                            status.setRollbackOnly(); // 明确标记本事务回滚
+                            // 只有在发生严重错误时才回滚
+                            if (isCriticalException(e)) {
+                                status.setRollbackOnly();
+                            }
                             return null;  // 返回null表示处理完成
                         }
                     });
@@ -151,6 +165,16 @@ public class GlobalTimeoutService {
     }
 
     /**
+     * 判断是否为需要回滚的严重异常
+     */
+    private boolean isCriticalException(Exception e) {
+        // 数据一致性相关的异常需要回滚
+        return e instanceof DataIntegrityViolationException
+                || e instanceof OptimisticLockingFailureException
+                || e instanceof PessimisticLockingFailureException;
+    }
+
+    /**
      * 检查订单是否已归档
      * @param orderNumber 订单号
      * @return 是否已归档
@@ -168,9 +192,14 @@ public class GlobalTimeoutService {
 
     /**
      * 检查单个订单的超时情况
-     * 整合了OrderTimeoutChecker的逻辑，根据订单类型选择适当的检查方法
+     * 修改：增加归档状态检查
      */
     private TimeoutResults.TimeoutCheckResult checkOrderTimeout(Timeoutable order, LocalDateTime now) {
+        // 增加额外的归档检查
+        if (isOrderArchived(order.getOrderNumber())) {
+            return new TimeoutResults.TimeoutCheckResult(TimeoutStatus.NORMAL, null, 0);
+        }
+
         TimeoutOrderType orderType = order.getTimeoutOrderType();
         OrderStatus status = order.getOrderStatus();
 

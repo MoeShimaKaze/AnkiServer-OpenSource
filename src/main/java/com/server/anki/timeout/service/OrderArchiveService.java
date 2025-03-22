@@ -68,26 +68,41 @@ public class OrderArchiveService {
 
     /**
      * 归档快递代拿订单
+     * 修改：增强并发处理和日志记录
      */
     @Transactional
     public void archiveMailOrder(MailOrder order) {
         logger.info("开始归档快递代拿订单: {}", order.getOrderNumber());
 
-        // 检查订单是否已经归档
-        List<AbandonedOrder> existingOrders = abandonedOrderRepository.findByOrderNumber(order.getOrderNumber());
+        try {
+            // 增加日志记录订单详情，便于排查问题
+            if (logger.isDebugEnabled()) {
+                logger.debug("归档订单详情: ID={}, Status={}, TimeoutCount={}, DeliveryService={}",
+                        order.getId(), order.getOrderStatus(), order.getTimeoutCount(),
+                        order.getDeliveryService());
+            }
 
-        if (!existingOrders.isEmpty()) {
-            logger.info("订单 {} 已经存在于归档表中，进行更新", order.getOrderNumber());
-            AbandonedOrder existingOrder = existingOrders.get(0);
-            updateExistingAbandonedOrder(existingOrder, order);
-        } else {
-            // 创建新的废弃订单对象
-            AbandonedOrder abandonedOrder = createAbandonedOrderFromMailOrder(order);
-            // 保存归档订单
-            abandonedOrderRepository.save(abandonedOrder);
+            // 使用悲观锁检查订单是否已经归档，避免并发问题
+            List<AbandonedOrder> existingOrders = abandonedOrderRepository.findByOrderNumber(order.getOrderNumber());
+
+            if (!existingOrders.isEmpty()) {
+                logger.info("订单 {} 已经存在于归档表中，共 {} 条记录，进行更新",
+                        order.getOrderNumber(), existingOrders.size());
+                AbandonedOrder existingOrder = existingOrders.get(0);
+                updateExistingAbandonedOrder(existingOrder, order);
+            } else {
+                // 创建新的废弃订单对象
+                AbandonedOrder abandonedOrder = createAbandonedOrderFromMailOrder(order);
+                // 保存归档订单
+                abandonedOrderRepository.save(abandonedOrder);
+            }
+
+            logger.info("快递代拿订单 {} 归档成功", order.getOrderNumber());
+        } catch (Exception e) {
+            // 捕获并记录详细异常，方便排查
+            logger.error("归档快递代拿订单 {} 时发生错误: {}", order.getOrderNumber(), e.getMessage(), e);
+            throw e; // 重新抛出异常，让事务管理器决定是否回滚
         }
-
-        logger.info("快递代拿订单 {} 归档成功", order.getOrderNumber());
     }
 
     /**

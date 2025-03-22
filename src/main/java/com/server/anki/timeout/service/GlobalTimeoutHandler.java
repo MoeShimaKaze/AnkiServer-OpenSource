@@ -2,8 +2,10 @@ package com.server.anki.timeout.service;
 
 import com.server.anki.fee.calculator.TimeoutFeeCalculator;
 import com.server.anki.fee.model.FeeTimeoutType;
+import com.server.anki.mailorder.entity.AbandonedOrder;
 import com.server.anki.mailorder.entity.MailOrder;
 import com.server.anki.mailorder.enums.OrderStatus;
+import com.server.anki.mailorder.repository.AbandonedOrderRepository;
 import com.server.anki.mailorder.repository.MailOrderRepository;
 import com.server.anki.mailorder.service.MailOrderService;
 import com.server.anki.message.MessageType;
@@ -31,6 +33,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.UUID;
 
 /**
  * 全局超时处理服务
@@ -69,6 +73,9 @@ public class GlobalTimeoutHandler {
 
     @Autowired
     private PurchaseRequestRepository purchaseRequestRepository;
+
+    @Autowired
+    private AbandonedOrderRepository abandonedOrderRepository;
 
     // 添加应用事件发布器
     @Autowired
@@ -169,10 +176,6 @@ public class GlobalTimeoutHandler {
         }
     }
 
-    /**
-     * 处理快递代拿订单的取件超时
-     * 修改：添加返回值表示处理结果，不再抛出异常
-     */
     private boolean handleMailOrderPickupTimeout(MailOrder order) {
         boolean success = true;
         if (order.getAssignedUser() != null) {
@@ -198,12 +201,17 @@ public class GlobalTimeoutHandler {
 
             // 判断归档条件：STANDARD≥10次，EXPRESS≥3次
             try {
-                int archiveThreshold = order.getDeliveryService() ==
-                        com.server.anki.mailorder.enums.DeliveryService.STANDARD ? 10 : 3;
-                if (order.getTimeoutCount() >= archiveThreshold) {
-                    mailOrderService.archiveOrder(order);
-                    logger.info("订单 {} 超过超时阈值 {}，已归档",
-                            order.getOrderNumber(), archiveThreshold);
+                // 首先检查订单是否已归档
+                if (!isOrderArchived(order.getOrderNumber())) {
+                    int archiveThreshold = order.getDeliveryService() ==
+                            com.server.anki.mailorder.enums.DeliveryService.STANDARD ? 10 : 3;
+                    if (order.getTimeoutCount() >= archiveThreshold) {
+                        mailOrderService.archiveOrder(order);
+                        logger.info("订单 {} 超过超时阈值 {}，已归档",
+                                order.getOrderNumber(), archiveThreshold);
+                    }
+                } else {
+                    logger.debug("订单 {} 已经归档，跳过归档处理", order.getOrderNumber());
                 }
             } catch (Exception e) {
                 logger.error("归档订单 {} 时发生错误: {}",
@@ -212,6 +220,21 @@ public class GlobalTimeoutHandler {
             }
         }
         return success;
+    }
+
+    /**
+     * 检查订单是否已归档
+     * @param orderNumber 订单号
+     * @return 是否已归档
+     */
+    private boolean isOrderArchived(UUID orderNumber) {
+        try {
+            List<AbandonedOrder> existingOrders = abandonedOrderRepository.findByOrderNumber(orderNumber);
+            return !existingOrders.isEmpty();
+        } catch (Exception e) {
+            logger.warn("检查订单 {} 归档状态时发生错误: {}", orderNumber, e.getMessage());
+            return false; // 出错时假设未归档，保守处理
+        }
     }
 
     /**
