@@ -7,9 +7,9 @@ import com.server.anki.mailorder.repository.MailOrderRepository;
 import com.server.anki.shopping.entity.PurchaseRequest;
 import com.server.anki.shopping.repository.PurchaseRequestRepository;
 import com.server.anki.shopping.repository.ShoppingOrderRepository;
-import com.server.anki.timeout.entity.TimeoutResults;
 import com.server.anki.timeout.core.TimeoutOrderType;
 import com.server.anki.timeout.core.Timeoutable;
+import com.server.anki.timeout.entity.TimeoutResults;
 import com.server.anki.timeout.enums.TimeoutStatus;
 import com.server.anki.timeout.enums.TimeoutType;
 import org.slf4j.Logger;
@@ -17,7 +17,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -48,8 +49,11 @@ public class GlobalTimeoutService {
     @Autowired
     private MailOrderConfig mailOrderConfig;
 
+    @Autowired
+    private PlatformTransactionManager transactionManager;
     /**
      * 定时检查所有类型订单的超时情况
+     * 修改：使用TransactionTemplate为每个订单创建独立事务
      */
     @Scheduled(fixedRateString = "${timeout.check-interval:60000}")
     public void checkAllOrderTimeouts() {
@@ -70,10 +74,36 @@ public class GlobalTimeoutService {
         activeOrders.sort((o1, o2) ->
                 o2.getTimeoutOrderType().getPriority() - o1.getTimeoutOrderType().getPriority());
 
+        TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+
         int processedCount = 0;
+        int successCount = 0;
+        int failureCount = 0;
+
         for (Timeoutable order : activeOrders) {
-            TimeoutResults.TimeoutCheckResult checkResult = checkOrderTimeout(order, now);
-            timeoutHandler.handleTimeoutResult(order, checkResult);
+            try {
+                transactionTemplate.execute(status -> {
+                    try {
+                        TimeoutResults.TimeoutCheckResult checkResult = checkOrderTimeout(order, now);
+                        if (checkResult.status() != TimeoutStatus.NORMAL) {
+                            timeoutHandler.handleTimeoutResult(order, checkResult);
+                        }
+                        return true;
+                    } catch (Exception e) {
+                        status.setRollbackOnly();
+                        logger.error("处理订单 {} 超时检查时发生错误: {}",
+                                order.getOrderNumber(), e.getMessage(), e);
+                        return false;
+                    }
+                });
+
+                successCount++;
+            } catch (Exception e) {
+                failureCount++;
+                logger.error("处理订单 {} 时事务执行失败: {}",
+                        order.getOrderNumber(), e.getMessage(), e);
+            }
+
             processedCount++;
 
             // 每处理100个订单记录一次日志
@@ -83,7 +113,8 @@ public class GlobalTimeoutService {
         }
 
         long duration = System.currentTimeMillis() - startTime;
-        logger.info("全局超时检查任务完成，共处理 {} 个订单，耗时 {} 毫秒", activeOrders.size(), duration);
+        logger.info("全局超时检查任务完成，共处理 {} 个订单，成功 {}，失败 {}，耗时 {} 毫秒",
+                activeOrders.size(), successCount, failureCount, duration);
     }
 
     /**
@@ -313,11 +344,31 @@ public class GlobalTimeoutService {
      * @param order 要检查的订单
      * @return 超时检查结果
      */
-    @Transactional
     public TimeoutResults.TimeoutCheckResult manualCheckTimeout(Timeoutable order) {
-        LocalDateTime now = LocalDateTime.now();
-        TimeoutResults.TimeoutCheckResult result = checkOrderTimeout(order, now);
-        timeoutHandler.handleTimeoutResult(order, result);
-        return result;
+        TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+
+        try {
+            return transactionTemplate.execute(status -> {
+                try {
+                    LocalDateTime now = LocalDateTime.now();
+                    TimeoutResults.TimeoutCheckResult result = checkOrderTimeout(order, now);
+
+                    if (result.status() != TimeoutStatus.NORMAL) {
+                        timeoutHandler.handleTimeoutResult(order, result);
+                    }
+
+                    return result;
+                } catch (Exception e) {
+                    status.setRollbackOnly();
+                    logger.error("手动处理订单 {} 超时检查时发生错误: {}",
+                            order.getOrderNumber(), e.getMessage(), e);
+                    throw e;
+                }
+            });
+        } catch (Exception e) {
+            logger.error("手动处理订单 {} 时事务执行失败: {}",
+                    order.getOrderNumber(), e.getMessage(), e);
+            throw e;
+        }
     }
 }

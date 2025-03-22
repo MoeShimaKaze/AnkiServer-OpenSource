@@ -3,7 +3,6 @@ package com.server.anki.timeout.service;
 import com.server.anki.fee.calculator.TimeoutFeeCalculator;
 import com.server.anki.fee.model.TimeoutType;
 import com.server.anki.mailorder.entity.MailOrder;
-import com.server.anki.mailorder.enums.DeliveryService;
 import com.server.anki.mailorder.enums.OrderStatus;
 import com.server.anki.mailorder.repository.MailOrderRepository;
 import com.server.anki.mailorder.service.MailOrderService;
@@ -16,6 +15,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -32,7 +32,6 @@ public class OrderTimeoutHandler {
     @Autowired
     private MailOrderRepository mailOrderRepository;
 
-    // 使用新的统一超时费用计算器
     @Autowired
     private TimeoutFeeCalculator timeoutFeeCalculator;
 
@@ -50,8 +49,8 @@ public class OrderTimeoutHandler {
 
     /**
      * 处理超时检查结果
+     * 修改: 移除了 @Transactional 注解，由调用者控制事务
      */
-    @Transactional
     public void handleTimeoutResult(MailOrder order, TimeoutResults.TimeoutCheckResult result) {
         if (result.status() == TimeoutStatus.NORMAL) {
             return;
@@ -74,6 +73,7 @@ public class OrderTimeoutHandler {
         } catch (Exception e) {
             logger.error("处理订单 {} 的超时状态时发生错误: {}",
                     order.getOrderNumber(), e.getMessage(), e);
+            throw e; // 向上抛出异常以便事务回滚
         }
     }
 
@@ -81,11 +81,11 @@ public class OrderTimeoutHandler {
      * 处理取件超时
      * 根据不同的配送类型和超时次数执行不同的处理逻辑
      */
-    @Transactional
-    protected void handlePickupTimeout(MailOrder order) {
+    @Transactional(propagation = Propagation.REQUIRED)
+    public void handlePickupTimeout(MailOrder order) {
         logger.info("处理订单 {} 的取件超时", order.getOrderNumber());
         try {
-            if (order.getDeliveryService() == DeliveryService.STANDARD) {
+            if (order.getDeliveryService() == com.server.anki.mailorder.enums.DeliveryService.STANDARD) {
                 // STANDARD：仅当超时次数≥3时扣罚金
                 if (order.getTimeoutCount() >= 3 && order.getAssignedUser() != null) {
                     // 使用新的统一费用计算器计算超时费用
@@ -105,11 +105,16 @@ public class OrderTimeoutHandler {
                     }
                 }
             }
+
+            // 增加超时计数
+            order.setTimeoutCount(order.getTimeoutCount() + 1);
+            mailOrderRepository.save(order);
+
             // 调用重置订单方法
             mailOrderService.resetOrderForReassignment(order);
 
             // 判断归档条件：STANDARD≥10次，EXPRESS≥3次
-            int archiveThreshold = order.getDeliveryService() == DeliveryService.STANDARD ? 10 : 3;
+            int archiveThreshold = order.getDeliveryService() == com.server.anki.mailorder.enums.DeliveryService.STANDARD ? 10 : 3;
             if (order.getTimeoutCount() >= archiveThreshold) {
                 mailOrderService.archiveOrder(order);
                 return;
@@ -126,18 +131,30 @@ public class OrderTimeoutHandler {
      * 处理配送超时
      * 计算并处理超时费用,EXPRESS订单需要平台介入
      */
-    @Transactional
-    protected void handleDeliveryTimeout(MailOrder order) {
+    @Transactional(propagation = Propagation.REQUIRED)
+    public void handleDeliveryTimeout(MailOrder order) {
         logger.info("处理订单 {} 的配送超时", order.getOrderNumber());
-        BigDecimal timeoutFee = timeoutFeeCalculator.calculateTimeoutFee(
-                order, TimeoutType.DELIVERY);
-        if (timeoutFee.compareTo(BigDecimal.ZERO) > 0) {
-            processTimeoutFee(order, timeoutFee, "配送超时罚金");
+
+        try {
+            // 增加超时计数
+            order.setTimeoutCount(order.getTimeoutCount() + 1);
+            mailOrderRepository.save(order);
+
+            BigDecimal timeoutFee = timeoutFeeCalculator.calculateTimeoutFee(
+                    order, TimeoutType.DELIVERY);
+
+            if (timeoutFee.compareTo(BigDecimal.ZERO) > 0) {
+                processTimeoutFee(order, timeoutFee, "配送超时罚金");
+            }
+
+            if (order.getDeliveryService() == com.server.anki.mailorder.enums.DeliveryService.EXPRESS) {
+                updateToIntervention(order);
+            }
+            // STANDARD订单配送超时仅扣罚金，保留原状态
+        } catch (Exception e) {
+            logger.error("处理订单 {} 配送超时错误: {}", order.getOrderNumber(), e.getMessage(), e);
+            throw new RuntimeException("配送超时处理失败", e);
         }
-        if (order.getDeliveryService() == DeliveryService.EXPRESS) {
-            updateToIntervention(order);
-        }
-        // STANDARD订单配送超时仅扣罚金，保留原状态
     }
 
     /**
@@ -145,38 +162,36 @@ public class OrderTimeoutHandler {
      * 扣除配送员账户余额并增加平台收入
      */
     private void processTimeoutFee(MailOrder order, BigDecimal timeoutFee, String reason) {
-        try {
-            String detailedReason = reason + " - 订单号: " + order.getOrderNumber();
-            walletService.addPendingFunds(
-                    order.getAssignedUser(),
-                    timeoutFee.negate(),
-                    detailedReason
-            );
-            order.setPlatformIncome(order.getPlatformIncome() + timeoutFee.doubleValue());
-            mailOrderRepository.save(order);
-            logger.info("订单 {} 的超时费用 {} 处理消息已发送",
-                    order.getOrderNumber(), timeoutFee);
-        } catch (Exception e) {
-            logger.error("处理订单 {} 的超时费用时发生错误: {}",
-                    order.getOrderNumber(), e.getMessage(), e);
+        if (order.getAssignedUser() == null) {
+            logger.warn("订单 {} 未分配配送员，无法处理超时费用", order.getOrderNumber());
+            return;
         }
+
+        String detailedReason = reason + " - 订单号: " + order.getOrderNumber();
+        walletService.addPendingFunds(
+                order.getAssignedUser(),
+                timeoutFee.negate(),
+                detailedReason
+        );
+
+        order.setPlatformIncome(order.getPlatformIncome() + timeoutFee.doubleValue());
+        mailOrderRepository.save(order);
+
+        logger.info("订单 {} 的超时费用 {} 处理消息已发送",
+                order.getOrderNumber(), timeoutFee);
     }
 
     /**
      * 更新订单为平台介入状态
      */
-    @Transactional
-    protected void updateToIntervention(MailOrder order) {
+    @Transactional(propagation = Propagation.REQUIRED)
+    public void updateToIntervention(MailOrder order) {
         logger.info("正在将订单 {} 更新为平台介入状态", order.getOrderNumber());
-        try {
-            order.setOrderStatus(OrderStatus.PLATFORM_INTERVENTION);
-            order.setInterventionTime(LocalDateTime.now());
-            mailOrderRepository.save(order);
-            logger.info("订单 {} 已成功更新为平台介入状态", order.getOrderNumber());
-        } catch (Exception e) {
-            logger.error("将订单 {} 更新为平台介入状态时发生错误: {}",
-                    order.getOrderNumber(), e.getMessage(), e);
-            throw e;
-        }
+
+        order.setOrderStatus(OrderStatus.PLATFORM_INTERVENTION);
+        order.setInterventionTime(LocalDateTime.now());
+        mailOrderRepository.save(order);
+
+        logger.info("订单 {} 已成功更新为平台介入状态", order.getOrderNumber());
     }
 }

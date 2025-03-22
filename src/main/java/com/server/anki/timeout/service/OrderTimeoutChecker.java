@@ -14,6 +14,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -30,7 +32,6 @@ public class OrderTimeoutChecker {
     @Autowired
     private MailOrderRepository mailOrderRepository;
 
-    // 使用新的统一超时费用计算器
     @Autowired
     private TimeoutFeeCalculator timeoutFeeCalculator;
 
@@ -40,8 +41,12 @@ public class OrderTimeoutChecker {
     @Autowired
     private MailOrderConfig mailOrderConfig;
 
+    @Autowired
+    private PlatformTransactionManager transactionManager;
+
     /**
      * 定时检查订单超时情况
+     * 修改：使用独立事务处理每个订单，避免一个订单失败影响其他订单
      */
     @Scheduled(fixedRateString = "${mailorder.check-interval}")
     public void checkOrderTimeouts() {
@@ -51,14 +56,33 @@ public class OrderTimeoutChecker {
 
         LocalDateTime now = LocalDateTime.now();
         logger.debug("正在检查 {} 个活跃订单", activeOrders.size());
+
+        TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+
         for (MailOrder order : activeOrders) {
-            TimeoutResults.TimeoutCheckResult checkResult;
-            if (order.getDeliveryService() == DeliveryService.STANDARD) {
-                checkResult = checkStandardOrderTimeout(order, now);
-            } else {
-                checkResult = checkExpressOrderTimeout(order, now);
+            try {
+                transactionTemplate.execute(status -> {
+                    try {
+                        TimeoutResults.TimeoutCheckResult checkResult;
+                        if (order.getDeliveryService() == DeliveryService.STANDARD) {
+                            checkResult = checkStandardOrderTimeout(order, now);
+                        } else {
+                            checkResult = checkExpressOrderTimeout(order, now);
+                        }
+
+                        if (checkResult.status() != TimeoutStatus.NORMAL) {
+                            timeoutHandler.handleTimeoutResult(order, checkResult);
+                        }
+                        return null;
+                    } catch (Exception e) {
+                        status.setRollbackOnly();
+                        logger.error("处理订单 {} 超时检查时发生错误: {}", order.getOrderNumber(), e.getMessage(), e);
+                        return null;
+                    }
+                });
+            } catch (Exception e) {
+                logger.error("处理订单 {} 时事务执行失败: {}", order.getOrderNumber(), e.getMessage(), e);
             }
-            timeoutHandler.handleTimeoutResult(order, checkResult);
         }
 
         logger.info("定时订单超时检查完成");
@@ -142,8 +166,6 @@ public class OrderTimeoutChecker {
                     elapsedMinutes - timeoutMinutes
             );
         } else if (timeoutPercentage >= mailOrderConfig.getWarningThreshold()) {
-            // OrderTimeoutChecker 的剩余部分：
-
             return new TimeoutResults.TimeoutCheckResult(
                     getTimeoutStatus(convertToOldTimeoutType(timeoutType), false),
                     convertToOldTimeoutType(timeoutType),

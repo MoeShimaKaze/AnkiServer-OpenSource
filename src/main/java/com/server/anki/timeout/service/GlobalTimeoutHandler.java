@@ -20,6 +20,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -58,8 +59,8 @@ public class GlobalTimeoutHandler {
      * 处理超时检查结果
      * @param order 订单
      * @param result 超时检查结果
+     * 修改：移除了@Transactional注解，由调用者控制事务
      */
-    @Transactional
     public void handleTimeoutResult(Timeoutable order, TimeoutResults.TimeoutCheckResult result) {
         if (result.status() == TimeoutStatus.NORMAL) {
             return;
@@ -75,7 +76,7 @@ public class GlobalTimeoutHandler {
                 default -> logger.debug("当前状态无需处理: {}", result.status());
             }
 
-            // 发送超时事件以更新统计
+// 发送超时事件以更新统计
             if (result.isTimeout()) {
                 Long userId = order.getAssignedUser() != null ? order.getAssignedUser().getId() : null;
                 // 这里可以发布事件更新统计
@@ -84,6 +85,7 @@ public class GlobalTimeoutHandler {
         } catch (Exception e) {
             logger.error("处理订单 {} 的超时状态时发生错误: {}",
                     order.getOrderNumber(), e.getMessage(), e);
+            throw e; // 向上抛出异常以便事务回滚
         }
     }
 
@@ -91,12 +93,16 @@ public class GlobalTimeoutHandler {
      * 处理取件超时
      * @param order 订单
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRED)
     protected void handlePickupTimeout(Timeoutable order) {
         TimeoutOrderType orderType = order.getTimeoutOrderType();
         logger.info("处理{}订单的取件超时: {}", orderType.getShortName(), order.getOrderNumber());
 
         try {
+            // 增加超时计数
+            order.setTimeoutCount(order.getTimeoutCount() + 1);
+            saveOrder(order);
+
             // 根据订单类型处理超时罚款
             switch (orderType) {
                 case MAIL_ORDER -> handleMailOrderPickupTimeout((MailOrder) order);
@@ -167,28 +173,38 @@ public class GlobalTimeoutHandler {
      * 处理配送超时
      * @param order 订单
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRED)
     protected void handleDeliveryTimeout(Timeoutable order) {
         TimeoutOrderType orderType = order.getTimeoutOrderType();
         logger.info("处理{}订单的配送超时: {}", orderType.getShortName(), order.getOrderNumber());
 
-        // 计算超时费用
-        BigDecimal timeoutFee = calculateTimeoutFee(order, TimeoutType.DELIVERY);
+        try {
+            // 增加超时计数
+            order.setTimeoutCount(order.getTimeoutCount() + 1);
+            saveOrder(order);
 
-        if (timeoutFee.compareTo(BigDecimal.ZERO) > 0) {
-            processTimeoutFee(order, timeoutFee, orderType.getShortName() + "配送超时罚金");
-        }
+            // 计算超时费用
+            BigDecimal timeoutFee = calculateTimeoutFee(order, TimeoutType.DELIVERY);
 
-        // 视情况进入平台介入
-        boolean needsIntervention = shouldEnterIntervention(order);
-
-        if (needsIntervention) {
-            // 根据订单类型调用不同服务的平台介入方法
-            switch (orderType) {
-                case MAIL_ORDER -> mailOrderService.setOrderToIntervention(order.getOrderNumber());
-                case SHOPPING_ORDER -> shoppingOrderService.handleOrderIntervention(order.getOrderNumber());
-                case PURCHASE_REQUEST -> purchaseRequestService.handleOrderIntervention(order.getOrderNumber());
+            if (timeoutFee.compareTo(BigDecimal.ZERO) > 0) {
+                processTimeoutFee(order, timeoutFee, orderType.getShortName() + "配送超时罚金");
             }
+
+            // 视情况进入平台介入
+            boolean needsIntervention = shouldEnterIntervention(order);
+
+            if (needsIntervention) {
+                // 根据订单类型调用不同服务的平台介入方法
+                switch (orderType) {
+                    case MAIL_ORDER -> mailOrderService.setOrderToIntervention(order.getOrderNumber());
+                    case SHOPPING_ORDER -> shoppingOrderService.handleOrderIntervention(order.getOrderNumber());
+                    case PURCHASE_REQUEST -> purchaseRequestService.handleOrderIntervention(order.getOrderNumber());
+                }
+            }
+        } catch (Exception e) {
+            logger.error("处理{}订单 {} 配送超时错误: {}",
+                    orderType.getShortName(), order.getOrderNumber(), e.getMessage(), e);
+            throw new RuntimeException("配送超时处理失败", e);
         }
     }
 
@@ -196,20 +212,30 @@ public class GlobalTimeoutHandler {
      * 处理确认超时
      * @param order 订单
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRED)
     protected void handleConfirmationTimeout(Timeoutable order) {
         TimeoutOrderType orderType = order.getTimeoutOrderType();
         logger.info("处理{}订单的确认超时: {}", orderType.getShortName(), order.getOrderNumber());
 
-        // 对于代购订单和快递订单，确认超时后自动完成
-        if (orderType == TimeoutOrderType.MAIL_ORDER) {
-            mailOrderService.completeOrder((MailOrder) order);
-        } else if (orderType == TimeoutOrderType.PURCHASE_REQUEST) {
-            purchaseRequestService.completeOrder((PurchaseRequest) order);
-        }
-        // 对于商家订单，确认超时后需平台介入
-        else if (orderType == TimeoutOrderType.SHOPPING_ORDER) {
-            shoppingOrderService.handleOrderIntervention(order.getOrderNumber());
+        try {
+            // 增加超时计数
+            order.setTimeoutCount(order.getTimeoutCount() + 1);
+            saveOrder(order);
+
+            // 对于代购订单和快递订单，确认超时后自动完成
+            if (orderType == TimeoutOrderType.MAIL_ORDER) {
+                mailOrderService.completeOrder((MailOrder) order);
+            } else if (orderType == TimeoutOrderType.PURCHASE_REQUEST) {
+                purchaseRequestService.completeOrder((PurchaseRequest) order);
+            }
+            // 对于商家订单，确认超时后需平台介入
+            else if (orderType == TimeoutOrderType.SHOPPING_ORDER) {
+                shoppingOrderService.handleOrderIntervention(order.getOrderNumber());
+            }
+        } catch (Exception e) {
+            logger.error("处理{}订单 {} 确认超时错误: {}",
+                    orderType.getShortName(), order.getOrderNumber(), e.getMessage(), e);
+            throw new RuntimeException("确认超时处理失败", e);
         }
     }
 
@@ -252,7 +278,7 @@ public class GlobalTimeoutHandler {
     /**
      * 将订单设置为平台介入状态
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRED)
     protected void updateToIntervention(Timeoutable order) {
         TimeoutOrderType orderType = order.getTimeoutOrderType();
         logger.info("正在将{}订单 {} 更新为平台介入状态",
@@ -319,16 +345,13 @@ public class GlobalTimeoutHandler {
         return order.getTimeoutCount() >= threshold;
     }
 
+    /**
+     * 处理超时费用
+     */
     private void processTimeoutFee(Timeoutable order, BigDecimal timeoutFee, String reason) {
         try {
             if (order.getAssignedUser() == null) {
                 logger.warn("订单 {} 未分配配送员，无法处理超时费用", order.getOrderNumber());
-                return;
-            }
-
-            // 检查地址信息是否完整
-            if (isAddressInfoIncomplete(order)) {
-                logger.warn("订单 {} 的地址信息不完整，无法处理超时费用", order.getOrderNumber());
                 return;
             }
 
@@ -342,6 +365,7 @@ public class GlobalTimeoutHandler {
             );
 
             // 增加平台收入
+            // 注意：不同类型订单的字段名可能不同，这里需要根据实际情况调整
             switch (order.getTimeoutOrderType()) {
                 case MAIL_ORDER -> {
                     MailOrder mailOrder = (MailOrder) order;
@@ -373,37 +397,8 @@ public class GlobalTimeoutHandler {
         } catch (Exception e) {
             logger.error("处理订单 {} 的超时费用时发生错误: {}",
                     order.getOrderNumber(), e.getMessage(), e);
+            throw e; // 向上抛出异常以便事务回滚
         }
-    }
-
-    /**
-     * 检查地址信息是否不完整
-     */
-    private boolean isAddressInfoIncomplete(Timeoutable order) {
-        switch (order.getTimeoutOrderType()) {
-            case MAIL_ORDER -> {
-                MailOrder mailOrder = (MailOrder) order;
-                return isNullOrEmpty(mailOrder.getPickupAddress()) || isNullOrEmpty(mailOrder.getDeliveryAddress());
-            }
-            case SHOPPING_ORDER -> {
-                ShoppingOrder shoppingOrder = (ShoppingOrder) order;
-                return isNullOrEmpty(shoppingOrder.getDeliveryAddress());
-            }
-            case PURCHASE_REQUEST -> {
-                PurchaseRequest purchaseRequest = (PurchaseRequest) order;
-                return isNullOrEmpty(purchaseRequest.getDeliveryAddress());
-            }
-            default -> {
-                return true;
-            }
-        }
-    }
-
-    /**
-     * 检查字符串是否为null或空
-     */
-    private boolean isNullOrEmpty(String str) {
-        return str == null || str.trim().isEmpty();
     }
 
     /**
