@@ -1,25 +1,29 @@
 package com.server.anki.timeout.service;
 
 import com.server.anki.config.MailOrderConfig;
+import com.server.anki.fee.calculator.TimeoutFeeCalculator;
+import com.server.anki.fee.model.TimeoutType;
+import com.server.anki.mailorder.entity.AbandonedOrder;
 import com.server.anki.mailorder.entity.MailOrder;
 import com.server.anki.mailorder.enums.DeliveryService;
 import com.server.anki.mailorder.enums.OrderStatus;
+import com.server.anki.mailorder.repository.AbandonedOrderRepository;
 import com.server.anki.mailorder.repository.MailOrderRepository;
 import com.server.anki.timeout.entity.TimeoutResults;
 import com.server.anki.timeout.enums.TimeoutStatus;
-import com.server.anki.fee.calculator.TimeoutFeeCalculator;
-import com.server.anki.fee.model.TimeoutType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * 订单超时检查服务
@@ -44,48 +48,95 @@ public class OrderTimeoutChecker {
     @Autowired
     private PlatformTransactionManager transactionManager;
 
+    @Autowired
+    private AbandonedOrderRepository abandonedOrderRepository;
+
     /**
      * 定时检查订单超时情况
      * 修改：使用独立事务处理每个订单，避免一个订单失败影响其他订单
+     * 增加检查避免处理已归档订单
      */
     @Scheduled(fixedRateString = "${mailorder.check-interval}")
     public void checkOrderTimeouts() {
         List<MailOrder> activeOrders = mailOrderRepository.findAll().stream()
-                .filter(order -> order.getOrderStatus() != OrderStatus.COMPLETED)
+                .filter(order -> order.getOrderStatus() != OrderStatus.COMPLETED &&
+                        order.getOrderStatus() != OrderStatus.CANCELLED)
                 .toList();
 
         LocalDateTime now = LocalDateTime.now();
         logger.debug("正在检查 {} 个活跃订单", activeOrders.size());
 
         TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+        // 设置事务传播行为为REQUIRES_NEW，确保每个订单都在独立事务中处理
+        transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+
+        int processedCount = 0;
+        int successCount = 0;
+        int failureCount = 0;
 
         for (MailOrder order : activeOrders) {
             try {
-                transactionTemplate.execute(status -> {
+                // 检查订单是否已归档，如果已归档则跳过处理
+                if (isOrderArchived(order.getOrderNumber())) {
+                    logger.debug("订单 {} 已归档，跳过处理", order.getOrderNumber());
+                    continue;
+                }
+
+                // 再次检查订单状态，防止在获取列表和处理之间状态已改变
+                MailOrder freshOrder = mailOrderRepository.findById(order.getId()).orElse(null);
+                if (freshOrder == null ||
+                        freshOrder.getOrderStatus() == OrderStatus.COMPLETED ||
+                        freshOrder.getOrderStatus() == OrderStatus.CANCELLED) {
+                    logger.debug("订单 {} 已完成或取消，跳过处理", order.getOrderNumber());
+                    continue;
+                }
+
+                Boolean result = transactionTemplate.execute(status -> {
                     try {
                         TimeoutResults.TimeoutCheckResult checkResult;
-                        if (order.getDeliveryService() == DeliveryService.STANDARD) {
-                            checkResult = checkStandardOrderTimeout(order, now);
+                        if (freshOrder.getDeliveryService() == DeliveryService.STANDARD) {
+                            checkResult = checkStandardOrderTimeout(freshOrder, now);
                         } else {
-                            checkResult = checkExpressOrderTimeout(order, now);
+                            checkResult = checkExpressOrderTimeout(freshOrder, now);
                         }
 
                         if (checkResult.status() != TimeoutStatus.NORMAL) {
-                            timeoutHandler.handleTimeoutResult(order, checkResult);
+                            timeoutHandler.handleTimeoutResult(freshOrder, checkResult);
                         }
-                        return null;
+                        return true;
                     } catch (Exception e) {
                         status.setRollbackOnly();
-                        logger.error("处理订单 {} 超时检查时发生错误: {}", order.getOrderNumber(), e.getMessage(), e);
-                        return null;
+                        logger.error("处理订单 {} 超时检查时发生错误: {}",
+                                freshOrder.getOrderNumber(), e.getMessage(), e);
+                        return false;
                     }
                 });
+
+                if (Boolean.TRUE.equals(result)) {
+                    successCount++;
+                } else {
+                    failureCount++;
+                }
             } catch (Exception e) {
-                logger.error("处理订单 {} 时事务执行失败: {}", order.getOrderNumber(), e.getMessage(), e);
+                failureCount++;
+                logger.error("处理订单 {} 时事务执行失败: {}",
+                        order.getOrderNumber(), e.getMessage(), e);
             }
+
+            processedCount++;
         }
 
-        logger.info("定时订单超时检查完成");
+        logger.info("定时订单超时检查完成，共处理 {} 个订单，成功 {}，失败 {}",
+                processedCount, successCount, failureCount);
+    }
+
+    /**
+     * 检查订单是否已归档
+     */
+    private boolean isOrderArchived(UUID orderNumber) {
+        // 查询废弃订单表，检查订单是否已归档
+        List<AbandonedOrder> existingOrders = abandonedOrderRepository.findByOrderNumber(orderNumber);
+        return !existingOrders.isEmpty();
     }
 
     /**
